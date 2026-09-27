@@ -34,19 +34,19 @@ static void iic_scl_output(iic_driver_t *p_iic_instance, uint16_t val);
 static uint8_t iic_sda_input(iic_driver_t *p_iic_instance);
 
 /* 总线信号 (对外接口, 使用void *匹配iic_interface_t) */
-static int8_t iic_start(void *p_ctx);
-static int8_t iic_stop(void *p_ctx);
-static int8_t iic_wait_ack(void *p_ctx);
-static int8_t iic_send_ack(void *p_ctx);
-static int8_t iic_send_not_ack(void *p_ctx);
-static int8_t iic_send_byte(void *p_ctx, uint8_t byte);
-static uint8_t iic_receive_byte(void *p_ctx);
+static int8_t iic_start(struct iic_driver *p_iic_instance);
+static int8_t iic_stop(struct iic_driver *p_iic_instance);
+static int8_t iic_wait_ack(struct iic_driver *p_iic_instance);
+static int8_t iic_send_ack(struct iic_driver *p_iic_instance);
+static int8_t iic_send_not_ack(struct iic_driver *p_iic_instance);
+static int8_t iic_send_byte(struct iic_driver *p_iic_instance, uint8_t byte);
+static uint8_t iic_receive_byte(struct iic_driver *p_iic_instance);
 
 /* 原始数据收发 (不含器件地址与寄存器, 由上层组装I2C帧) */
-static int8_t iic_send_bytes(void *p_ctx,
+static int8_t iic_send_bytes(struct iic_driver *p_iic_instance,
 							 uint8_t *pdata,
 							 uint8_t size);
-static int8_t iic_receive_bytes(void *p_ctx,
+static int8_t iic_receive_bytes(struct iic_driver *p_iic_instance,
 								uint8_t *pdata,
 								uint8_t size);
 
@@ -147,10 +147,8 @@ static uint8_t iic_sda_input(iic_driver_t *p_iic_instance)
  * @param   p_ctx[in] void * → iic_driver_t *
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_start(void *p_ctx)
+static int8_t iic_start(struct iic_driver *p_iic_instance)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
-
 	iic_sda_output(p_iic_instance, 1);
 	p_iic_instance->p_delay_interface->pf_delay_us(2);
 	iic_scl_output(p_iic_instance, 1);
@@ -166,13 +164,11 @@ static int8_t iic_start(void *p_ctx)
 /******************************************************************************
  * @name    iic_stop
  * @brief   发送I2C停止信号
- * @param   p_ctx[in] void * → iic_driver_t *
+ * @param   p_ctx[in] iic_driver_t *
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_stop(void *p_ctx)
+static int8_t iic_stop(struct iic_driver *p_iic_instance)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
-
 	iic_scl_output(p_iic_instance, 0);
 	p_iic_instance->p_delay_interface->pf_delay_us(2);
 	iic_sda_output(p_iic_instance, 0);
@@ -192,9 +188,8 @@ static int8_t iic_stop(void *p_ctx)
  * @return  0 success (收到ACK)
  *         -1 timeout (未收到ACK)
  *****************************************************************************/
-static int8_t iic_wait_ack(void *p_ctx)
+static int8_t iic_wait_ack(struct iic_driver *p_iic_instance)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 	uint16_t cErrTime = 5;
 
 	iic_sda_input_mode(p_iic_instance);
@@ -224,9 +219,8 @@ static int8_t iic_wait_ack(void *p_ctx)
  * @param   p_ctx[in] void * → iic_driver_t *
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_send_ack(void *p_ctx)
+static int8_t iic_send_ack(struct iic_driver *p_iic_instance)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 
 	iic_sda_output(p_iic_instance, 0);
 	p_iic_instance->p_delay_interface->pf_delay_us(1);
@@ -244,10 +238,8 @@ static int8_t iic_send_ack(void *p_ctx)
  * @param   p_ctx[in] void * → iic_driver_t *
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_send_not_ack(void *p_ctx)
+static int8_t iic_send_not_ack(struct iic_driver *p_cp_iic_instancetx)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
-
 	iic_sda_output(p_iic_instance, 1);
 	p_iic_instance->p_delay_interface->pf_delay_us(1);
 	iic_scl_output(p_iic_instance, 1);
@@ -265,9 +257,8 @@ static int8_t iic_send_not_ack(void *p_ctx)
  * @param   byte[in]   待发送的字节
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_send_byte(void *p_ctx, uint8_t byte)
+static int8_t iic_send_byte(struct iic_driver *p_iic_instance, uint8_t byte)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 	uint8_t i = 8;
 
 	while (i--)
@@ -293,9 +284,8 @@ static int8_t iic_send_byte(void *p_ctx, uint8_t byte)
  * @param   p_ctx[in] void * → iic_driver_t *
  * @return  接收到的字节
  *****************************************************************************/
-static uint8_t iic_receive_byte(void *p_ctx)
+static uint8_t iic_receive_byte(struct iic_driver *p_iic_instance)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 	uint8_t i = 8;
 	uint8_t cR_Byte = 0;
 
@@ -331,11 +321,10 @@ static uint8_t iic_receive_byte(void *p_ctx)
  * @return  0 success
  *         -1 ack error
  *****************************************************************************/
-static int8_t iic_send_bytes(void *p_ctx,
+static int8_t iic_send_bytes(struct iic_driver *p_iic_instance,
 							 uint8_t *pdata,
 							 uint8_t size)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 	uint8_t i;
 
 	for (i = 0; i < size; i++)
@@ -363,11 +352,10 @@ static int8_t iic_send_bytes(void *p_ctx,
  * @return  0 success
  *         -1 ack error
  *****************************************************************************/
-static int8_t iic_receive_bytes(void *p_ctx,
+static int8_t iic_receive_bytes(struct iic_driver *p_iic_instance,
 								uint8_t *pdata,
 								uint8_t size)
 {
-	iic_driver_t *p_iic_instance = (iic_driver_t *)p_ctx;
 	uint8_t i;
 
 	for (i = 0; i < size; i++)
@@ -457,24 +445,22 @@ int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 	p_iic_instance->bus.scl_pin = p_bus->scl_pin;
 
 	/* 初始化GPIO */
-	{
-		GPIO_InitTypeDef GPIO_InitStructure = {0};
+	GPIO_InitTypeDef GPIO_InitStructure = {0};
 
-		GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
-		GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
-		GPIO_InitStructure.Pull = GPIO_PULLUP;
-		GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-		HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
+	GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
+	GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStructure.Pull = GPIO_PULLUP;
+	GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
+	HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
 
-		GPIO_InitStructure.Pin = p_iic_instance->bus.scl_pin;
-		HAL_GPIO_Init(p_iic_instance->bus.p_scl_port, &GPIO_InitStructure);
-	}
+	GPIO_InitStructure.Pin = p_iic_instance->bus.scl_pin;
+	HAL_GPIO_Init(p_iic_instance->bus.p_scl_port, &GPIO_InitStructure);
 
 	/* 总线初始状态: SDA/SCL均置高 */
 	iic_sda_output(p_iic_instance, 1);
 	iic_scl_output(p_iic_instance, 1);
 
-	/* 挂载函数指针 (void *签名与iic_interface_t匹配, 可直接赋值) */
+	/* 挂载函数指针 */
 	p_iic_instance->pf_inst = iic_driver_inst;
 	p_iic_instance->pf_deinst = iic_deinst;
 	p_iic_instance->pf_start = iic_start;

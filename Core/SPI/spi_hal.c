@@ -20,20 +20,20 @@
  *
  * @note 1 tab == 4 spaces!
  *
+ * @note 与 spi_hal.h 的两条接口契约(本文件的形参/调用点与头文件逐字对齐):
+ *       1) spi_semaphore_interface_t 只有 pf_wait(void)/pf_release(void) 两个
+ *          **无形参**回调, 结构体里没有实例成员 —— 信号量句柄归注入方自己持有
+ *          (本工程是 main.c 的 lcd_spi_sem_handle; 裸机下可为空实现).
+ *       2) 四个传输函数的实例形参是 struct spi_driver *, 不再是 void *.
  *****************************************************************************/
 #include "spi_hal.h"
 
-/********************************* 前向声明 *********************************/
 static int8_t spi_deinst(spi_driver_t *p_spi_instance);
+static int8_t spi_transmit(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
+static int8_t spi_receive(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
+static int8_t spi_transmit_receive(spi_driver_t *p_spi_instance, uint8_t *ptx, uint8_t *prx, uint32_t size);
+static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
 
-/* 底层SPI传输操作 (对外接口, 使用void *匹配上层接口) */
-static int8_t spi_transmit(void *p_ctx, uint8_t *pdata, uint32_t size);
-static int8_t spi_receive(void *p_ctx, uint8_t *pdata, uint32_t size);
-static int8_t spi_transmit_receive(void *p_ctx,
-								   uint8_t *ptx,
-								   uint8_t *prx,
-								   uint32_t size);
-static int8_t spi_transmit_dma(void *p_ctx, uint8_t *pdata, uint32_t size);
 
 /******************************************************************************
  * @name    HAL_SPI_TxCpltCallback
@@ -48,18 +48,13 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 	/* container_of: hspi 位于实例偏移0处, 强转即得实例指针 */
 	spi_driver_t *p_spi = (spi_driver_t *)hspi;
 
-	/* 裸机: 置完成标志 */
-	p_spi->tx_complete = 1;
-
-#ifdef OS_SUPPORTING
-	/* OS: 释放信号量, 唤醒等待的发送任务 */
+	/* OS: 释放信号量, 唤醒等待的发送任务
+	 * 裸机: 置标志位, 唤醒阻塞状态 */
 	if (NULL != p_spi->p_semaphore_interface &&
 		NULL != p_spi->p_semaphore_interface->pf_release)
 	{
-		p_spi->p_semaphore_interface->pf_release(
-			p_spi->p_semaphore_interface->p_semaphore_instance);
+		(void)p_spi->p_semaphore_interface->pf_release();
 	}
-#endif // OS_SUPPORTING
 }
 
 /********************************* SPI传输 *********************************/
@@ -67,7 +62,7 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 /******************************************************************************
  * @name    spi_transmit
  * @brief   阻塞发送字节流
- * @param   p_ctx[in] void * → spi_driver_t *
+ * @param   p_spi_instance[in] SPI驱动实例
  * @param   pdata[in] 数据缓冲区
  * @param   size[in]  字节数(全双工下须≤SPI_TX_RX_SCRATCH_SIZE)
  *
@@ -81,9 +76,8 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
  *          因 BSY 状态卡死(HAL_MAX_DELAY 无限等)。因此发送一律走 TransmitReceive,
  *          边发边把回波收进 scratch(丢弃), 保证无 OVR、FIFO 始终干净。
  *****************************************************************************/
-static int8_t spi_transmit(void *p_ctx, uint8_t *pdata, uint32_t size)
+static int8_t spi_transmit(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size)
 {
-	spi_driver_t *p_spi_instance = (spi_driver_t *)p_ctx;
 	static uint8_t s_rx_scratch[SPI_TX_RX_SCRATCH_SIZE];  /* 收走回波, 丢弃 */
 
 	if (NULL == p_spi_instance)
@@ -109,7 +103,7 @@ static int8_t spi_transmit(void *p_ctx, uint8_t *pdata, uint32_t size)
 /******************************************************************************
  * @name    spi_receive
  * @brief   阻塞接收字节流
- * @param   p_ctx[in]  void * → spi_driver_t *
+ * @param   p_spi_instance[in] SPI驱动实例
  * @param   pdata[out] 数据缓冲区
  * @param   size[in]   字节数
  *
@@ -117,10 +111,8 @@ static int8_t spi_transmit(void *p_ctx, uint8_t *pdata, uint32_t size)
  *         -1 spi_instance null
  *         -2 spi receive error
  *****************************************************************************/
-static int8_t spi_receive(void *p_ctx, uint8_t *pdata, uint32_t size)
+static int8_t spi_receive(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size)
 {
-	spi_driver_t *p_spi_instance = (spi_driver_t *)p_ctx;
-
 	if (NULL == p_spi_instance)
 	{
 		return -1;
@@ -138,7 +130,7 @@ static int8_t spi_receive(void *p_ctx, uint8_t *pdata, uint32_t size)
 /******************************************************************************
  * @name    spi_transmit_receive
  * @brief   阻塞全双工收发
- * @param   p_ctx[in] void * → spi_driver_t *
+ * @param   p_spi_instance[in] SPI驱动实例
  * @param   ptx[in]    发送缓冲区
  * @param   prx[out]   接收缓冲区
  * @param   size[in]   字节数
@@ -147,13 +139,11 @@ static int8_t spi_receive(void *p_ctx, uint8_t *pdata, uint32_t size)
  *         -1 spi_instance null
  *         -2 spi transmit receive error
  *****************************************************************************/
-static int8_t spi_transmit_receive(void *p_ctx,
+static int8_t spi_transmit_receive(spi_driver_t *p_spi_instance,
 								   uint8_t *ptx,
 								   uint8_t *prx,
 								   uint32_t size)
 {
-	spi_driver_t *p_spi_instance = (spi_driver_t *)p_ctx;
-
 	if (NULL == p_spi_instance)
 	{
 		return -1;
@@ -171,7 +161,7 @@ static int8_t spi_transmit_receive(void *p_ctx,
 /******************************************************************************
  * @name    spi_transmit_dma
  * @brief   DMA中断方式发送字节流(启动+等待合并, 阻塞至完成/超时)
- * @param   p_ctx[in] void * → spi_driver_t *
+ * @param   p_spi_instance[in] SPI驱动实例
  * @param   pdata[in] 数据缓冲区
  * @param   size[in]  字节数
  *
@@ -183,11 +173,11 @@ static int8_t spi_transmit_receive(void *p_ctx,
  *         -5 wait error (OS: 信号量等待失败 / 裸机: 超时)
  *
  * @note    OS环境 → 阻塞等待信号量(ISR释放); 裸机 → 计数器轮询直到完成/超时
+ *          OS分支的等待**无超时**: 时限由注入方的 pf_wait 自己决定(本工程
+ *          main.c 里给的是 200ms, 见那里的注释)
  *****************************************************************************/
-static int8_t spi_transmit_dma(void *p_ctx, uint8_t *pdata, uint32_t size)
+static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size)
 {
-	spi_driver_t *p_spi_instance = (spi_driver_t *)p_ctx;
-
 	if (NULL == p_spi_instance)
 	{
 		return -1;
@@ -223,8 +213,8 @@ static int8_t spi_transmit_dma(void *p_ctx, uint8_t *pdata, uint32_t size)
 		return -4;
 	}
 
-	if (0 != p_spi_instance->p_semaphore_interface->pf_wait(
-			p_spi_instance->p_semaphore_interface->p_semaphore_instance))
+	/* pf_wait() 无形参: 句柄与超时策略都在注入方(见其头文件注释) */
+	if (0 != p_spi_instance->p_semaphore_interface->pf_wait())
 	{
 		return -5;
 	}
@@ -382,7 +372,8 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 	p_spi_instance->tx_complete = 0;
 	p_spi_instance->tx_start_tick = 0;
 
-	/* 挂载函数指针 (void *签名与上层spi_interface_t匹配, 可直接赋值) */
+	/* 挂载函数指针 (形参类型与头文件字段一致: spi_driver_t *, 可直接赋值;
+	 * 若仍写成 void *, AC6 会以 incompatible-function-pointer-types **报错**) */
 	p_spi_instance->pf_inst = spi_driver_inst;
 	p_spi_instance->pf_deinst = spi_deinst;
 	p_spi_instance->pf_transmit = spi_transmit;

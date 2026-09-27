@@ -41,7 +41,7 @@ typedef struct
 	uint16_t scl_pin;
 } iic_bus_t;
 
-/* 延时接口 (软件I2C时序需要微秒级延时, 由调用方注入) */
+/* 延时接口 */
 typedef struct
 {
 	void (*pf_delay_us)(uint32_t us); /* 微秒延时 */
@@ -52,7 +52,7 @@ typedef struct iic_driver
 {
 	iic_bus_t bus; /* 总线硬件配置 */
 
-	iic_delay_interface_t *p_delay_interface; /* 延时接口(软件I2C时序) */
+	iic_delay_interface_t *p_delay_interface; /* 延时接口 */
 
 	/* 构造与析构 */
 	int8_t (*pf_inst)(struct iic_driver *p_iic_instance,
@@ -61,19 +61,20 @@ typedef struct iic_driver
 	int8_t (*pf_deinst)(struct iic_driver *p_iic_instance);
 
 	/* 底层I2C总线操作 */
-	int8_t (*pf_start)(void *p_iic_instance);
-	int8_t (*pf_stop)(void *p_iic_instance);
-	int8_t (*pf_wait_ack)(void *p_iic_instance);
-	int8_t (*pf_send_ack)(void *p_iic_instance);
-	int8_t (*pf_send_not_ack)(void *p_iic_instance);
-	int8_t (*pf_send_byte)(void *p_iic_instance, uint8_t byte);
-	uint8_t (*pf_receive_byte)(void *p_iic_instance);
+	int8_t (*pf_start)(struct iic_driver *p_iic_instance);
+	int8_t (*pf_stop)(struct iic_driver *p_iic_instance);
+	int8_t (*pf_wait_ack)(struct iic_driver *p_iic_instance);
+	int8_t (*pf_send_ack)(struct iic_driver *p_iic_instance);
+	int8_t (*pf_send_not_ack)(struct iic_driver *p_iic_instance);
+
+	int8_t (*pf_send_byte)(struct iic_driver *p_iic_instance, uint8_t byte);
+	uint8_t (*pf_receive_byte)(struct iic_driver *p_iic_instance);
 
 	/* 原始数据收发*/
-	int8_t (*pf_send_bytes)(void *p_iic_instance,
+	int8_t (*pf_send_bytes)(struct iic_driver *p_iic_instance,
 							uint8_t *pdata,
 							uint8_t size);
-	int8_t (*pf_receive_bytes)(void *p_iic_instance,
+	int8_t (*pf_receive_bytes)(struct iic_driver *p_iic_instance,
 							   uint8_t *pdata,
 							   uint8_t size);
 
