@@ -52,14 +52,13 @@
 
 #include <stdio.h>
 #include "lvgl.h"
-#include "../../LVGL/port/lv_port_disp.h"
-#include "../../LVGL/port/lv_port_indev.h"
-#include "../../LVGL/port/lv_watch_ui.h"
-#include "../../LVGL/port/lv_watch_selftest.h"
+#include "lv_port_disp.h"
+#include "lv_port_indev.h"
+#include "lv_watch_ui.h"
 #include "cmsis_os2.h"
 
 /***********************************Defines************************************/
-/* ---- 测试UI已移除(2026-09-16); 自检改由 lv_watch_selftest 承担(2026-09-17) ----
+/* ---- 测试UI已移除(2026-09-16) ----
    这里原先有两个编译期开关, 各自指向一个测试页面, 现已连同页面文件一起删除:
      LVGL_BRINGUP_TEST=1   → lv_demo_app 上电自检页(显示/触摸 PASS/FAIL 总结)
      LVGL_PAGESTACK_TEST=1 → page_demo 的 4 个 PageMem 示例页(验证 LRU 淘汰)
@@ -68,20 +67,9 @@
    所以现在只有**一条路**: 载入手表UI. 别在 .uvprojx 或 C/C++ → Define 里找这两个
    宏 —— 它们已经不存在了, 定义了也没有任何代码会看它.
 
-   2026-09-17: 手表UI + 页面管理器的上电自检落在 LVGL/port/lv_watch_selftest.c,
-   它有 11 步(建页/切页/淘汰重建/RTC 时刻…), 每步打一行 [UI] PASS/FAIL + 总计.
-
-   ⚠ **它当前没有被调用**(2026-09-18 核实): lv_watch_selftest_start() 全工程零调用者,
-   下面 EVT_HW_INDEV_INIT 走到成功分支后是**直接** ServiceState = EVT_RUN, 没有启动那
-   一行. 连带后果是 lv_watch_selftest.o 整个被链接器 GC 掉(map 里是一片 Removing),
-   所以**上电并不会自动跑自检**. 它没有编译开关 —— 只差那一行调用.
-   (本段此前写成"在 EVT_HW_INDEV_INIT 里一行调用启动 / 上电自动跑", 是**错的**;
-    那行调用从来没有被加进来过. 已按下述事实改写.)
-
-   要启用: 在下面 EVT_HW_INDEV_INIT 的 `error_cnt = 0;` 之前加一行
-     `lv_watch_selftest_start();`
-   注意它会**驱动界面**(第 5~9 步反复切页/清页, 第 6 步 page_mgr_clear 会把在屏页面
-   全部销毁), 属于产品行为决定, 不是随手能开的调试开关. */
+   2026-09-17 加的 lv_watch_selftest(11 步上电自检)已于 2026-09-28 连同文件与
+   Keil 组条目一起删除 —— 它从未被调用过(lv_watch_selftest_start() 全工程零调用者,
+   .o 整个被链接器 GC), 属于残留. */
 
 
 /* UI 泵节拍: LVGL 自身刷新周期 LV_DEF_REFR_PERIOD=33ms, 5ms 只是让触摸采样与

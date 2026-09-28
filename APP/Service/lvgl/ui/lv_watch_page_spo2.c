@@ -61,8 +61,8 @@
  *          和旧数值回来.
  ******************************************************************************/
 #include "lv_watch_page.h"
-#include "../../APP/EasyAPP/port/easyapp_port.h"
-#include "../../APP/APPPAGE/DataModel/cywatch_app_datamodel.h"
+#include "easyapp_port.h"
+#include "cywatch_app_datamodel.h"
 
 #include <stdio.h>
 

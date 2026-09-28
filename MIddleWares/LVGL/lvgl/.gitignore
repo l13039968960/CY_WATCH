@@ -1,0 +1,24 @@
+**/*.o
+**/*bin
+**/*.swp
+**/*.swo
+**/*.gcda
+**/*.gcno
+tags
+scripts/cppcheck_res.txt
+scripts/built_in_font/lv_font_*
+__pycache__
+/emscripten_builder
+test_screenshot_error.h
+build/
+.DS_Store
+.vscode
+.idea
+*.bak
+.vs/
+.config*
+# 上游原为 "config.h"(无斜杠), 会连 src/libs/thorvg/config.h 一起吞掉,
+# 导致 git add 静默漏掉那个文件; 锚定到 lvgl 根才是上游本意
+/config.h
+defconfig
+env/*

@@ -33,11 +33,6 @@
 /* 触摸端口初始化: 构造CST816T驱动(独立I2C PA8/PB4 + INT PB2 + RST PA15)并注册LVGL指针输入设备 */
 int8_t lv_port_indev_init(void);
 
-/* 最近一次触摸坐标/状态(调试用, 由触摸读回调在主循环内更新; 当前无使用者, 会被 GC) */
-lv_coord_t lv_port_indev_last_x(void);
-lv_coord_t lv_port_indev_last_y(void);
-uint8_t lv_port_indev_pressed(void);
-
 /**********************************Declaring***********************************/
 
 #endif // __LV_PORT_INDEV_H__

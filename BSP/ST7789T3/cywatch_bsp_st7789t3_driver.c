@@ -21,7 +21,7 @@
  * @note 1 tab == 4 spaces!
  *
  *****************************************************************************/
-#include "../Inc/cywatch_bsp_st7789t3_driver.h"
+#include "cywatch_bsp_st7789t3_driver.h"
 
 /* 默认配置 */
 #define ST7789T3_DEFAULT_DIRECTION   st7789t3_dir_0   /* 默认 0° 竖屏 */
@@ -400,7 +400,9 @@ int8_t st7789t3_inst(bsp_st7789t3_driver_t *p_st7789t3_instance,
 	}
 	else
 	{
-		if (NULL == p_spi_interface->pf_send_bytes ||
+		if (NULL == p_spi_interface->pf_init ||
+			NULL == p_spi_interface->pf_deinit ||
+			NULL == p_spi_interface->pf_send_bytes ||
 			NULL == p_spi_interface->pf_send_bytes_dma)
 		{
 			return -2;
@@ -413,7 +415,9 @@ int8_t st7789t3_inst(bsp_st7789t3_driver_t *p_st7789t3_instance,
 	}
 	else
 	{
-		if (NULL == p_gpio_interface->pf_dc_set ||
+		if (NULL == p_gpio_interface->pf_init ||
+			NULL == p_gpio_interface->pf_deinit ||
+			NULL == p_gpio_interface->pf_dc_set ||
 			NULL == p_gpio_interface->pf_cs_set ||
 			NULL == p_gpio_interface->pf_rst_set)
 		{
@@ -439,7 +443,9 @@ int8_t st7789t3_inst(bsp_st7789t3_driver_t *p_st7789t3_instance,
 	}
 	else
 	{
-		if (NULL == p_pwm_interface->pf_backlight_set)
+		if (NULL == p_pwm_interface->pf_init ||
+			NULL == p_pwm_interface->pf_deinit ||
+			NULL == p_pwm_interface->pf_pwm_set)
 		{
 			return -5;
 		}
@@ -550,6 +556,12 @@ static int8_t st7789t3_deinst(bsp_st7789t3_driver_t *p_st7789t3_instance)
  *         -15 gmctrn1 config failed
  *         -16 invert on failed
  *         -17 display on failed
+ *         -18 spi interface init failed
+ *         -19 gpio interface init failed
+ *         -20 pwm interface init failed
+ *
+ * @note    各外设(SPI总线/GPIO/PWM)的初始化虽然最先执行, 但用的是追加在末尾的
+ *          -18/-19/-20 码段, 以免平移原有的 -2..-17 破坏既有定位习惯
  *****************************************************************************/
 static int8_t st7789t3_init(bsp_st7789t3_driver_t *p_st7789t3_instance)
 {
@@ -559,6 +571,26 @@ static int8_t st7789t3_init(bsp_st7789t3_driver_t *p_st7789t3_instance)
 	if (NULL == p_st7789t3_instance)
 	{
 		return -1;
+	}
+
+	/* 各外设初始化: SPI总线 → GPIO(控制脚) → PWM(背光), 顺序必须最先 ——
+	   后面的复位/寄存器读写全依赖它们已经就绪 */
+	ret = p_st7789t3_instance->p_spi_interface->pf_init();
+	if (0 != ret)
+	{
+		return -18;
+	}
+
+	ret = p_st7789t3_instance->p_gpio_interface->pf_init();
+	if (0 != ret)
+	{
+		return -19;
+	}
+
+	ret = p_st7789t3_instance->p_pwm_interface->pf_init();
+	if (0 != ret)
+	{
+		return -20;
 	}
 
 	/* 1. 硬件复位 */
@@ -708,6 +740,12 @@ static int8_t st7789t3_init(bsp_st7789t3_driver_t *p_st7789t3_instance)
  *         -1 st7789t3_instance null
  *         -2 display off failed
  *         -3 sleep in failed
+ *         -4 pwm interface deinit failed
+ *         -5 gpio interface deinit failed
+ *         -6 spi interface deinit failed
+ *
+ * @note    外设反初始化在最后执行, 顺序与init相反(PWM → GPIO → SPI):
+ *          前面的DISPOFF/SLPIN两条命令还要靠SPI和GPIO活着才能发出去
  *****************************************************************************/
 static int8_t st7789t3_deinit(bsp_st7789t3_driver_t *p_st7789t3_instance)
 {
@@ -733,6 +771,25 @@ static int8_t st7789t3_deinit(bsp_st7789t3_driver_t *p_st7789t3_instance)
 	}
 
 	p_st7789t3_instance->p_delay_interface->pf_delay(ST7789T3_SLEEP_IN_MS);
+
+	/* 各外设反初始化(逆序) */
+	ret = p_st7789t3_instance->p_pwm_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -4;
+	}
+
+	ret = p_st7789t3_instance->p_gpio_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -5;
+	}
+
+	ret = p_st7789t3_instance->p_spi_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -6;
+	}
 
 	return 0;
 }
@@ -861,9 +918,19 @@ static int8_t st7789t3_display_off(bsp_st7789t3_driver_t *p_st7789t3_instance)
  * @return  0 success
  *         -1 st7789t3_instance null
  *         -2 spi write error
+ *         -3 pwm interface deinit failed
+ *         -4 gpio interface deinit failed
+ *         -5 spi interface deinit failed
+ *
+ * @note    外设反初始化在SLPIN之后执行, 顺序与init相反(PWM → GPIO → SPI):
+ *          前面的SLPIN还得靠SPI和GPIO活着才发得出去。面板已入睡, 关掉外设不影响它
+ *          保持睡眠; 要再通信必须先走 st7789t3_wakeup 把外设开回来。
+ *          外设码段追加在末尾(-3/-4/-5), 不平移原有的 -1/-2
  *****************************************************************************/
 static int8_t st7789t3_sleep(bsp_st7789t3_driver_t *p_st7789t3_instance)
 {
+	int8_t ret = 0;
+
 	if (NULL == p_st7789t3_instance)
 	{
 		return -1;
@@ -876,6 +943,25 @@ static int8_t st7789t3_sleep(bsp_st7789t3_driver_t *p_st7789t3_instance)
 
 	p_st7789t3_instance->p_delay_interface->pf_delay(ST7789T3_SLEEP_IN_MS);
 
+	/* 各外设反初始化: PWM(背光) → GPIO(控制脚) → SPI总线 */
+	ret = p_st7789t3_instance->p_pwm_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -3;
+	}
+
+	ret = p_st7789t3_instance->p_gpio_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -4;
+	}
+
+	ret = p_st7789t3_instance->p_spi_interface->pf_deinit();
+	if (0 != ret)
+	{
+		return -5;
+	}
+
 	return 0;
 }
 
@@ -887,12 +973,41 @@ static int8_t st7789t3_sleep(bsp_st7789t3_driver_t *p_st7789t3_instance)
  * @return  0 success
  *         -1 st7789t3_instance null
  *         -2 spi write error
+ *         -3 spi interface init failed
+ *         -4 gpio interface init failed
+ *         -5 pwm interface init failed
+ *
+ * @note    外设初始化在SLPOUT之前执行, 顺序与init相同(SPI → GPIO → PWM):
+ *          SLPOUT 得靠SPI和GPIO活着才发得出去。只发SLPOUT不重配面板寄存器 ——
+ *          睡眠期间面板不掉电, COLMOD/MADCTL/Gamma/INVON 都还在。
+ *          外设码段追加在末尾(-3/-4/-5), 不平移原有的 -1/-2
  *****************************************************************************/
 static int8_t st7789t3_wakeup(bsp_st7789t3_driver_t *p_st7789t3_instance)
 {
+	int8_t ret = 0;
+
 	if (NULL == p_st7789t3_instance)
 	{
 		return -1;
+	}
+
+	/* 各外设初始化: SPI总线 → GPIO(控制脚) → PWM(背光) */
+	ret = p_st7789t3_instance->p_spi_interface->pf_init();
+	if (0 != ret)
+	{
+		return -3;
+	}
+
+	ret = p_st7789t3_instance->p_gpio_interface->pf_init();
+	if (0 != ret)
+	{
+		return -4;
+	}
+
+	ret = p_st7789t3_instance->p_pwm_interface->pf_init();
+	if (0 != ret)
+	{
+		return -5;
 	}
 
 	if (0 != st7789t3_write_command(p_st7789t3_instance, ST7789T3_SLPOUT))
@@ -970,7 +1085,7 @@ static int8_t st7789t3_set_backlight(bsp_st7789t3_driver_t *p_st7789t3_instance,
 		return -1;
 	}
 
-	p_st7789t3_instance->p_pwm_interface->pf_backlight_set(value);
+	p_st7789t3_instance->p_pwm_interface->pf_pwm_set(value);
 
 	return 0;
 }

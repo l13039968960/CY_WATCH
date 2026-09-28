@@ -34,7 +34,7 @@
  *       里只清句柄, **不要**自己 lv_obj_delete(p_chart) —— 已在递归删除中.
  ******************************************************************************/
 #include "lv_watch_page.h"
-#include "../../APP/EasyAPP/port/easyapp_port.h"
+#include "easyapp_port.h"
 
 #include <stdio.h>
 

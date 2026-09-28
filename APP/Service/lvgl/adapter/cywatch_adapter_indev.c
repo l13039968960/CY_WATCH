@@ -19,9 +19,10 @@
  *
  * Processing flow:
  *
- * 1. lvgl_bsp_indev_inst(): RST(PA15) GPIO → 填 IIC/GPIO/中断/semaphore/
- *    delay/timebase 六个接口 → cst816t_inst()(寄存器配置 + ChipID 自检)
- *    → 挂 EXTI2 回调(PB2 下降沿);
+ * 1. lvgl_bsp_indev_inst(): 填 IIC/GPIO/中断/semaphore/delay 五个接口, 裸机再加
+ *    timebase(OS_SUPPORTING 下该接口不存在)
+ *    (IIC 与 GPIO 两个接口各带 pf_init/pf_deinit) → cst816t_inst()(内部先回调各
+ *    外设 init, 再做 RST 复位/寄存器配置/ChipID 自检) → 挂 EXTI2 回调(PB2 下降沿);
  * 2. 之后每次 lvgl_bsp_indev_read_touch() 轮询读 6 字节触摸帧(非阻塞);
  * 3. lvgl_bsp_indev_deinst() 析构.
  *
@@ -38,8 +39,11 @@
  *         编译链接全过, 运行时读到垃圾数据, 极难定位。
  *
  * @note 设备自身的控制脚(RST PA15 / INT PB2)由本 adapter 自己配置, 不上交 main.c:
- *       与 W25Q64/adapter 自持 CS(PB12)同一做法。这四个脚都不在 MX_GPIO_Init 里
- *       (CubeMX 未纳管), 必须由本层 __HAL_RCC_GPIOx_CLK_ENABLE() + 配好。
+ *       与 W25Q64/adapter 自持 CS(PB12)同一做法。本工程**没有** MX_GPIO_Init(参考工程
+ *       Dirver_Test/Core/Src/gpio.c 那份迁移时未搬入, main.c 的调用点也是空的), 所以
+ *       没有任何别的地方会配这些脚。
+ *       RST(PA15) 的配置现已并入 gpio 接口的 pf_init(裸 HAL: 开 GPIOA 时钟 + 先写 ODR
+ *       再配 MODER), 由驱动在 cst816t_init 里回调, 不再在 inst 里内联。
  *
  * @note `lvgl_bsp_indev_inst()` 内含 osDelay(复位等待) → 必须在 osKernelStart()
  *       之后的**任务上下文**调用, 不能放在 main 启动内核之前.
@@ -59,13 +63,13 @@
  *       void * 就是 -Wincompatible-function-pointer-types 编译失败(本工程里这是
  *       错误而不是警告)。
  ******************************************************************************/
-#include "cywatch_adapter_cst816t.h"
+#include "cywatch_adapter_indev.h"
 
-#include "../hal_driver/Inc/cywatch_bsp_cst816t_driver.h"
-#include "../../IIC/iic_hal.h"   /* iic_driver_t: 触摸专用位带 I2C, 由 main.c 提供 */
-#include "../../GPIO/gpio_hal.h" /* gpio_driver_t: RST(PA15) */
-#include "../../EXTI/exti_hal.h" /* exti_driver_t: INT(PB2) */
-#include "../../system/Delay/delay.h"   /* delay_us: GPIO/EXTI 驱动 inst 会校验 pf_delay_us 非空 */
+#include "cywatch_bsp_cst816t_driver.h"
+#include "iic_hal.h"   /* iic_driver_t: 触摸专用位带 I2C, 由 main.c 提供 */
+#include "gpio_hal.h" /* gpio_driver_t: RST(PA15) */
+#include "exti_hal.h" /* exti_driver_t: INT(PB2) */
+#include "delay.h"   /* delay_us: GPIO/EXTI 驱动 inst 会校验 pf_delay_us 非空 */
 #include "main.h"                /* __HAL_RCC_GPIOx_CLK_ENABLE */
 #include "cmsis_os2.h"           /* osDelay / osKernelGetTickCount / osSemaphore* */
 
@@ -96,7 +100,11 @@ static cst816t_iic_interface_t         cst816t_iic_interface_instance;
 static cst816t_gpio_interface_t        cst816t_gpio_interface_instance;
 static cst816t_semaphore_interface_t   cst816t_semaphore_instance;
 static cst816t_delay_interface_t       cst816t_delay_instance;
+#ifndef OS_SUPPORTING
+/* 时基实例只有裸机的中断轮询等待会读(见驱动头文件); OS_SUPPORTING 下本层
+   连类型都不存在, 实例一并省掉 */
 static cst816t_timebase_interface_t    cst816t_timebase_instance;
+#endif // OS_SUPPORTING
 static cst816t_interrupt_interface_t   cst816t_interrupt_instance;
 
 /* 中断信号量: 轮询读模式下不会被 wait, 但 ISR 会 release(见 cst816t_irq_cb),
@@ -207,17 +215,22 @@ static void cst816t_delay_cb(uint32_t ms)
 	(void)osDelay(ms);
 }
 
+#ifndef OS_SUPPORTING
 /******************************************************************************
  * @name    cst816t_get_time_cb
  * @brief   时基: 内核 tick 计数(供驱动的中断等待超时计数使用)
  * @param   无
  *
  * @return  当前内核 tick(ms)
+ *
+ * @note    仅裸机编入: 只被 cst816t_timebase_instance 引用, 而该实例在
+ *          OS_SUPPORTING 下不存在, 留着会变成 -Wunused-function
  *****************************************************************************/
 static uint32_t cst816t_get_time_cb(void)
 {
 	return osKernelGetTickCount();
 }
+#endif // OS_SUPPORTING
 
 /* ---- 信号量接口(ISR 中 release, 任务上下文 wait) ---- */
 
@@ -302,6 +315,80 @@ static int8_t touch_iic_receive_bytes(uint8_t *pdata, uint8_t size)
 	return touch_iic_instance.pf_receive_bytes(&touch_iic_instance, pdata, size);
 }
 
+/******************************************************************************
+ * @name    cst816t_iic_init
+ * @brief   I2C总线初始化: 转发到 main.c 的 touch_iic_instance
+ *
+ * @return  0 success, 非0 见 iic_hal 的 pf_init
+ *
+ * @note    驱动在 cst816t_init 里回调本函数。iic_hal 那侧带引用计数, 若总线已被
+ *          别的使用者init过, 这里只累加计数、不会把 PA8/PB4 重配一遍。
+ *****************************************************************************/
+static int8_t cst816t_iic_init(void)
+{
+	return touch_iic_instance.pf_init(&touch_iic_instance);
+}
+
+/******************************************************************************
+ * @name    cst816t_iic_deinit
+ * @brief   I2C总线反初始化: 转发到 main.c 的 touch_iic_instance
+ *
+ * @return  0 success, 非0 见 iic_hal 的 pf_deinit
+ *
+ * @note    引用计数减到 0 才真正 HAL_GPIO_DeInit 掉 PA8/PB4; 之后器件只能靠
+ *          RST 引脚唤醒(见 cst816t_wakeup), 要再通信必须先 pf_init 把总线开回来。
+ *****************************************************************************/
+static int8_t cst816t_iic_deinit(void)
+{
+	return touch_iic_instance.pf_deinit(&touch_iic_instance);
+}
+
+/******************************************************************************
+ * @name    lvgl_bsp_indev_gpio_init
+ * @brief   RST引脚(PA15)配置到运行态: 输出推挽 + 置高释放复位
+ *
+ * @return  0 success
+ *
+ * @note    CST816T 低电平复位, 所以初始电平必须是高。先写 ODR 再配 MODER:
+ *          输出锁存器预置成"释放复位", 引脚一变成输出就立刻是高, 不会给芯片
+ *          打出一个假复位脉冲。
+ *          @note 这里直接写裸 HAL, 与 touch_rst_gpio(gpio_hal)对同一根 PA15 的
+ *                构造并存 —— 两者配的是同一组寄存器值, 重复执行无害; 保留
+ *                touch_rst_gpio 是因为 touch_rst_set_level 还在用它写电平。
+ *****************************************************************************/
+static int8_t lvgl_bsp_indev_gpio_init(void)
+{
+	GPIO_InitTypeDef gpio = { 0 };
+
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+
+	HAL_GPIO_WritePin(CST816T_RST_PORT, CST816T_RST_PIN, GPIO_PIN_SET);
+
+	gpio.Pin   = CST816T_RST_PIN;
+	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+	gpio.Pull  = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(CST816T_RST_PORT, &gpio);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    lvgl_bsp_indev_gpio_deinit
+ * @brief   释放RST引脚(PA15), 恢复复位默认态
+ *
+ * @return  0 success
+ *
+ * @note    不动 GPIOA 时钟: 同一端口上还挂着位带 I2C 的 SCL(PA8)、LCD 的
+ *          DC/CS/SCK/MOSI/背光等, 关时钟会误伤。
+ *****************************************************************************/
+static int8_t lvgl_bsp_indev_gpio_deinit(void)
+{
+	HAL_GPIO_DeInit(CST816T_RST_PORT, CST816T_RST_PIN);
+
+	return 0;
+}
+
 /* ============================= 构造/析构 ============================= */
 
 /******************************************************************************
@@ -352,6 +439,8 @@ int8_t lvgl_bsp_indev_inst(void)
 	}
 
 	/* 4. 挂I2C接口(转发到 main.c 的 touch_iic_instance) */
+	cst816t_iic_interface_instance.pf_init          = cst816t_iic_init;
+	cst816t_iic_interface_instance.pf_deinit        = cst816t_iic_deinit;
 	cst816t_iic_interface_instance.pf_start         = touch_iic_start;
 	cst816t_iic_interface_instance.pf_stop          = touch_iic_stop;
 	cst816t_iic_interface_instance.pf_wait_ack      = touch_iic_wait_ack;
@@ -361,7 +450,9 @@ int8_t lvgl_bsp_indev_inst(void)
 	cst816t_iic_interface_instance.pf_receive_bytes = touch_iic_receive_bytes;
 
 	/* 5. 挂GPIO(RST)接口 */
-	cst816t_gpio_interface_instance.pf_gpio_set_level = touch_rst_set_level;
+	cst816t_gpio_interface_instance.pf_init            = lvgl_bsp_indev_gpio_init;
+	cst816t_gpio_interface_instance.pf_deinit          = lvgl_bsp_indev_gpio_deinit;
+	cst816t_gpio_interface_instance.pf_gpio_set_level  = touch_rst_set_level;
 
 	/* 6. 挂信号量/延时/时基接口
 	   @note 信号量句柄由本层静态量 cst816t_sem_handle 直接持有, 不再经接口结构体
@@ -371,23 +462,27 @@ int8_t lvgl_bsp_indev_inst(void)
 
 	cst816t_delay_instance.pf_delay = cst816t_delay_cb;
 
+#ifndef OS_SUPPORTING
 	cst816t_timebase_instance.pf_get_time = cst816t_get_time_cb;
+#endif // OS_SUPPORTING
 
 	/* 7. 挂中断接口 */
 	cst816t_interrupt_instance.pf_enable_interrupt  = touch_int_enable;
 	cst816t_interrupt_instance.pf_disable_interrupt = touch_int_disable;
 
-	/* 8. 构造驱动: 六接口校验 → 寄存器配置(中断源/手势/时序) → ChipID 自检 */
+	/* 8. 构造驱动: 接口校验 → 寄存器配置(中断源/手势/时序) → ChipID 自检 */
 	ret = cst816t_inst(&cst816t_instance,
 					   &cst816t_iic_interface_instance,
 					   &cst816t_gpio_interface_instance,
 					   &cst816t_semaphore_instance,
 					   &cst816t_delay_instance,
+#ifndef OS_SUPPORTING
 					   &cst816t_timebase_instance,
+#endif // OS_SUPPORTING
 					   &cst816t_interrupt_instance);
 	if (0 != ret)
 	{
-		return -4;
+		return ret;
 	}
 
 	/* 9. 挂EXTI回调(ISR → cst816t_irq_cb 释放信号量 + 置 irq_flag)。

@@ -25,6 +25,8 @@
 
 /********************************* 前向声明 *********************************/
 static int8_t iic_deinst(iic_driver_t *p_iic_instance);
+static int8_t iic_init(iic_driver_t *p_iic_instance);
+static int8_t iic_deinit(iic_driver_t *p_iic_instance);
 
 /* 底层GPIO操作 (内部调用, 使用iic_driver_t *) */
 static void iic_sda_input_mode(iic_driver_t *p_iic_instance);
@@ -238,7 +240,7 @@ static int8_t iic_send_ack(struct iic_driver *p_iic_instance)
  * @param   p_ctx[in] void * → iic_driver_t *
  * @return  0 success
  *****************************************************************************/
-static int8_t iic_send_not_ack(struct iic_driver *p_cp_iic_instancetx)
+static int8_t iic_send_not_ack(struct iic_driver *p_iic_instance)
 {
 	iic_sda_output(p_iic_instance, 1);
 	p_iic_instance->p_delay_interface->pf_delay_us(1);
@@ -374,11 +376,102 @@ static int8_t iic_receive_bytes(struct iic_driver *p_iic_instance,
 /********************************* 构造与析构 *********************************/
 
 /******************************************************************************
+ * @name    iic_init
+ * @brief   I2C驱动初始化: 把SDA/SCL配置到运行态(GPIO + 总线空闲电平)
+ * @param   p_iic_instance[in]
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *
+ * @note    调用前对应GPIO端口的时钟必须已使能, 否则写MODER无效, 引脚停在复位
+ *          默认态(BSRR也拉不动), I2C的START条件发不出来。
+ *
+ * @note    引用计数: ref_count 由 0→1 时才真正配置GPIO, 已有使用者时只累加计数
+ *          (同一实例被重复init不会把总线重配一遍)。
+ *****************************************************************************/
+static int8_t iic_init(iic_driver_t *p_iic_instance)
+{
+	GPIO_InitTypeDef GPIO_InitStructure = {0};
+
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	/* 首个使用者才真正把SDA/SCL配到运行态 */
+	if (0 == p_iic_instance->ref_count)
+	{
+		/* 1. SDA/SCL均配为推挽输出 + 上拉 */
+		GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
+		GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
+		GPIO_InitStructure.Pull = GPIO_PULLUP;
+		GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
+		HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
+
+		GPIO_InitStructure.Pin = p_iic_instance->bus.scl_pin;
+		HAL_GPIO_Init(p_iic_instance->bus.p_scl_port, &GPIO_InitStructure);
+
+		/* 2. 总线初始状态: SDA/SCL均置高 */
+		iic_sda_output(p_iic_instance, 1);
+		iic_scl_output(p_iic_instance, 1);
+
+		p_iic_instance->init_state = 1;
+	}
+
+	p_iic_instance->ref_count++;
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    iic_deinit
+ * @brief   I2C驱动反初始化: 释放SDA/SCL引脚, 恢复复位默认态
+ * @param   p_iic_instance[in]
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *
+ * @note    只DeInit引脚, 不动GPIO端口时钟: 本总线所在端口可能与其他外设共用
+ *          (如LCD也挂在GPIOA上), 关时钟会连带打死它们。时钟归应用层管。
+ *
+ * @note    引用计数: 每个使用者退出时减1, 减到0才真正释放引脚。
+ *****************************************************************************/
+static int8_t iic_deinit(iic_driver_t *p_iic_instance)
+{
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	/* 退出一个使用者(已在0则不再减, 防uint8下溢后永远回不到0) */
+	if (p_iic_instance->ref_count > 0)
+	{
+		p_iic_instance->ref_count--;
+	}
+
+	/* 最后一个使用者退出时才真正释放SDA/SCL引脚 */
+	if (0 == p_iic_instance->ref_count)
+	{
+		HAL_GPIO_DeInit(p_iic_instance->bus.p_sda_port, p_iic_instance->bus.sda_pin);
+		HAL_GPIO_DeInit(p_iic_instance->bus.p_scl_port, p_iic_instance->bus.scl_pin);
+
+		p_iic_instance->init_state = 0;
+	}
+
+	return 0;
+}
+
+/******************************************************************************
  * @name    iic_deinst
  * @brief   I2C驱动析构: 清除所有函数指针
  * @param   p_iic_instance[in]
+ *
  * @return  0 success
  *         -1 p_iic_instance null
+ *         -2 仍有使用者(ref_count != 0), 本次不析构
+ *
+ * @note    本函数不关外设 —— 释放SDA/SCL引脚走pf_deinit。析构会清空pf_start等
+ *          全部指针, 等于废掉整条总线, 所以只在没有使用者时才允许执行。
  *****************************************************************************/
 static int8_t iic_deinst(iic_driver_t *p_iic_instance)
 {
@@ -387,10 +480,21 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
 		return -1;
 	}
 
+	/* 仍有使用者: 清指针会把复用本实例的其他设备一起废掉 */
+	if (0 != p_iic_instance->ref_count)
+	{
+		return -2;
+	}
+
 	p_iic_instance->p_delay_interface = NULL;
+
+	p_iic_instance->init_state = 0;
+	p_iic_instance->ref_count = 0;
 
 	p_iic_instance->pf_inst = NULL;
 	p_iic_instance->pf_deinst = NULL;
+	p_iic_instance->pf_init = NULL;
+	p_iic_instance->pf_deinit = NULL;
 	p_iic_instance->pf_start = NULL;
 	p_iic_instance->pf_stop = NULL;
 	p_iic_instance->pf_wait_ack = NULL;
@@ -406,7 +510,10 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
 
 /******************************************************************************
  * @name    iic_driver_inst
- * @brief   I2C驱动构造函数: 初始化GPIO、注入延时接口、挂载函数指针
+ * @brief   I2C驱动构造函数: 加载总线配置、注入延时接口、挂载函数指针
+ *
+ *          本函数不碰硬件, GPIO的配置在pf_init()里做。
+ *
  * @param   p_iic_instance[out]   I2C驱动实例
  * @param   p_bus[in]            GPIO总线配置
  * @param   p_delay_interface[in] 延时接口(软件I2C时序需微秒级延时)
@@ -438,31 +545,21 @@ int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 	/* 注入延时接口 */
 	p_iic_instance->p_delay_interface = p_delay_interface;
 
+	/* 实例状态: 尚未初始化, 无使用者 */
+	p_iic_instance->init_state = 0;
+	p_iic_instance->ref_count = 0;
+
 	/* 加载总线配置 */
 	p_iic_instance->bus.p_sda_port = p_bus->p_sda_port;
 	p_iic_instance->bus.p_scl_port = p_bus->p_scl_port;
 	p_iic_instance->bus.sda_pin = p_bus->sda_pin;
 	p_iic_instance->bus.scl_pin = p_bus->scl_pin;
 
-	/* 初始化GPIO */
-	GPIO_InitTypeDef GPIO_InitStructure = {0};
-
-	GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
-	GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
-	GPIO_InitStructure.Pull = GPIO_PULLUP;
-	GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
-
-	GPIO_InitStructure.Pin = p_iic_instance->bus.scl_pin;
-	HAL_GPIO_Init(p_iic_instance->bus.p_scl_port, &GPIO_InitStructure);
-
-	/* 总线初始状态: SDA/SCL均置高 */
-	iic_sda_output(p_iic_instance, 1);
-	iic_scl_output(p_iic_instance, 1);
-
 	/* 挂载函数指针 */
 	p_iic_instance->pf_inst = iic_driver_inst;
 	p_iic_instance->pf_deinst = iic_deinst;
+	p_iic_instance->pf_init = iic_init;
+	p_iic_instance->pf_deinit = iic_deinit;
 	p_iic_instance->pf_start = iic_start;
 	p_iic_instance->pf_stop = iic_stop;
 	p_iic_instance->pf_wait_ack = iic_wait_ack;

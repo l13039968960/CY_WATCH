@@ -65,6 +65,34 @@
 #define configUSE_TRACE_FACILITY                1   /* CMSIS-RTOS2 osThreadEnumerate 需要 */
 #define configUSE_TICKLESS_IDLE                 0
 
+/* 运行时间统计 (2026-09-28 开) ----------------------------------------- */
+/* 打开后 vTaskGetRunTimeStats()/vTaskList() 才有定义. 注意 vTaskList 的
+   "Stack" 列就是 uxTaskGetStackHighWaterMark 的水位值(单位: word), 所以
+   栈水位检测不需要 configCHECK_FOR_STACK_OVERFLOW, 保持它的 0 即可.
+   @note configRUN_TIME_COUNTER_TYPE 故意不定义: FreeRTOS.h 默认就是 uint32_t,
+         与 TIM5->CNT 宽度一致. 若改成 64 位, vTaskGetRunTimeStats 会静默截断 */
+#define configGENERATE_RUN_TIME_STATS           1
+/* vTaskList/vTaskGetRunTimeStats 是"便利函数"不是内核, 由本开关单独控制;
+   =1 会让 tasks.c #include <stdio.h>(用 sprintf 排版), =2 则只编函数不带头文件 */
+#define configUSE_STATS_FORMATTING_FUNCTIONS    1
+
+/* 统计时基 = TIM5 自由计数 10kHz (见 Core/system/rtstats/rtstats.c).
+   由内核在 vTaskStartScheduler() 里调一次(见 tasks.c 里
+   portCONFIGURE_TIMER_FOR_RUN_TIME_STATS), 所以"统计起点 = 调度器启动时刻",
+   且不依赖 main.c 与内核的调用先后.
+   @note **不能用 DWT->CYCCNT 当这个时基**: 百分比的分母就是这里返回的原始
+         计数值(tasks.c 里 ulTotalRunTime = 当前计数值), 而 100MHz 的 32 位
+         计数 42.9 秒就回绕一次 —— 系统跑 100 秒, 只占 3% 的任务会算出 98%.
+         软件除法也救不了(数值变粗, 回绕周期不变). 必须换更慢的硬件计数器,
+         详见 rtstats.c 文件头. TIM5 是 32 位, 10kHz 下 119.3 小时才回绕.
+   @note 这两个宏只把函数名声明出来, 不 include rtstats.h —— 本文件要保持
+         自包含(不引 CMSIS/工程头), tasks.c 那边也拿不到 stm32f4xx.h,
+         所以这里不能直接写 TIM5->CNT */
+extern void     rtstats_init(void);
+extern uint32_t rtstats_get_counter(void);
+#define portCONFIGURE_TIMER_FOR_RUN_TIME_STATS()  rtstats_init()
+#define portGET_RUN_TIME_COUNTER_VALUE()          rtstats_get_counter()
+
 /* 中断优先级 (STM32F4: 4 位优先级) ------------------------------------- */
 #define configPRIO_BITS                         ( 4 )
 #define configLIBRARY_LOWEST_INTERRUPT_PRIORITY 15

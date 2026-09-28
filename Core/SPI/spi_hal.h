@@ -88,16 +88,23 @@ typedef struct spi_driver
 	uint32_t tx_start_tick;       /* 发送启动时刻(用于超时计数) */
 #endif /* OS_SUPPORTING */
 
+	uint8_t init_state; /* 初始化状态: 0=deinit, 1=init */
+	uint8_t ref_count;  /* 使用本外设的实例数量: 0→1 才真正初始化, 减到 0 才真正反初始化 */
+
 	/* 构造与析构 */
 	int8_t (*pf_inst)(struct spi_driver *p_spi_instance,
 					  spi_cfg_t *p_cfg,
 					  spi_semaphore_interface_t *p_semaphore_interface,
-					  spi_delay_interface_t *p_delay_interface,
+					  spi_delay_interface_t *p_delay_interface
 #ifndef OS_SUPPORTING
-					  spi_timebase_interface_t *p_timebase_interface
-#endif /* OS_SUPPORTING */											);
+					  , spi_timebase_interface_t *p_timebase_interface
+#endif /* OS_SUPPORTING */
+					  );
 	
 	int8_t (*pf_deinst)(struct spi_driver *p_spi_instance);
+
+	int8_t (*pf_init)(struct spi_driver *p_spi_instance);
+	int8_t (*pf_deinit)(struct spi_driver *p_spi_instance);
 
 	/* SPI传输操作*/
 	int8_t (*pf_transmit)(struct spi_driver *p_spi_instance,
@@ -122,10 +129,11 @@ typedef struct spi_driver
 int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 					   spi_cfg_t *p_cfg,
 					   spi_semaphore_interface_t *p_semaphore_interface,
-					   spi_delay_interface_t *p_delay_interface,
+					   spi_delay_interface_t *p_delay_interface
 #ifndef OS_SUPPORTING
-					   spi_timebase_interface_t *p_timebase_interface
-#endif /* OS_SUPPORTING */											);
+					   , spi_timebase_interface_t *p_timebase_interface
+#endif /* OS_SUPPORTING */
+					   );
 
 /**********************************Declaring***********************************/
 

@@ -18,8 +18,9 @@
  *
  * Processing flow:
  *
- * 1. lvgl_bsp_disp_inst(): 背光 PA1 GPIO → 填 SPI/GPIO/delay/pwm
- *    四个接口 → st7789t3_inst()(含硬件复位与面板寄存器初始化);
+ * 1. lvgl_bsp_disp_inst(): 填 SPI/GPIO/delay/pwm 四个接口(每个接口都带 pf_init/
+ *    pf_deinit, 四根控制脚 DC/CS/RST/背光 的 GPIO 配置在 gpio 的 pf_init 里)
+ *    → st7789t3_inst()(内部依次回调各外设 init, 再做硬件复位与面板寄存器初始化);
  * 2. 之后每次画面刷新: lvgl_bsp_disp_set_window() + _write_pixels();
  * 3. lvgl_bsp_disp_deinst() 析构.
  *
@@ -38,10 +39,10 @@
  *       (ISR)内释放信号量, 本层不含任何 ISR 代码; 阻塞等待在
  *       spi_driver.pf_transmit_dma 内部完成.
  ******************************************************************************/
-#include "cywatch_adapter_st7789t3.h"
+#include "cywatch_adapter_disp.h"
 
-#include "../hal_driver/Inc/cywatch_bsp_st7789t3_driver.h"
-#include "../../SPI/spi_hal.h" /* spi_driver_t: 硬件 SPI1 总线, 由 main.c 提供 */
+#include "cywatch_bsp_st7789t3_driver.h"
+#include "spi_hal.h" /* spi_driver_t: 硬件 SPI1 总线, 由 main.c 提供 */
 #include "main.h"              /* LCD_DC_Pin / LCD_CS_Pin / LCD_RST_Pin / LCD_PWR_Pin */
 #include "cmsis_os2.h"         /* osDelay */
 
@@ -152,6 +153,106 @@ static void lvgl_bsp_disp_backlight_set(uint8_t level)
 }
 
 /******************************************************************************
+ * @name    lvgl_bsp_disp_gpio_init
+ * @brief   四根控制脚(DC/CS/RST/背光)配置到运行态
+ *
+ * @return  0 success
+ *
+ * @note    四根控制脚(DC=PA6 / CS=PA4 / RST=PC13 / 背光=PA1)全由本层自配, 不上交
+ *          main.c: 与触摸 adapter 自持 RST(PA15)/INT(PB2) 是同一做法。
+ *          @note 本工程**没有** MX_GPIO_Init —— 参考工程 Dirver_Test/Core/Src/gpio.c
+ *                里那个函数在迁移时没搬进来, main.c 的调用点("Initialize all
+ *                configured peripherals" 下面)也是空的。所以这四根线除了这里, 没有
+ *                任何地方会配它们。漏配的后果: 引脚停在复位默认的**输入浮空**态
+ *                (PA4/PA6 在 GPIOA, MODER 复位值 0xA8000000; PC13 在 GPIOC, MODER
+ *                复位值 0), 此时 HAL_GPIO_WritePin 只写 BSRR/ODR, 输出驱动级是断开
+ *                的 —— 电平等同于没写。于是 CS 被模块自身上拉拉高 → 面板忽略全部
+ *                SPI 流量, RST 复位脉冲也发不出去 → 整屏不亮, 而串口日志一切正常
+ *                (驱动只发不收, 没有回读校验)。
+ *          @note PC13 在 GPIOC, 而全工程没有任何地方开过 GPIOC 的时钟, 必须自己开。
+ *          @note 先写 ODR 再配 MODER(与参考工程同序): 输出锁存器预置成空闲电平,
+ *                引脚一变成输出就立刻是 RST/CS/DC 的高电平, 不会产生一次假复位/
+ *                假片选。
+ *          @note 驱动在 st7789t3_init 里回调本函数, 早于复位脉冲与任何SPI流量。
+ *****************************************************************************/
+static int8_t lvgl_bsp_disp_gpio_init(void)
+{
+	GPIO_InitTypeDef gpio = { 0 };
+
+	__HAL_RCC_GPIOA_CLK_ENABLE();
+	__HAL_RCC_GPIOC_CLK_ENABLE();
+
+	HAL_GPIO_WritePin(s_lcd_rst_pin.p_port, s_lcd_rst_pin.pin, GPIO_PIN_SET);
+	HAL_GPIO_WritePin(s_lcd_cs_pin.p_port,  s_lcd_cs_pin.pin,  GPIO_PIN_SET);
+	HAL_GPIO_WritePin(s_lcd_dc_pin.p_port,  s_lcd_dc_pin.pin,  GPIO_PIN_SET);
+	HAL_GPIO_WritePin(s_lcd_bl_pin.p_port,  s_lcd_bl_pin.pin,  GPIO_PIN_RESET);
+
+	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
+	gpio.Pull  = GPIO_NOPULL;
+	gpio.Speed = GPIO_SPEED_FREQ_LOW;
+
+	gpio.Pin = s_lcd_rst_pin.pin;
+	HAL_GPIO_Init(s_lcd_rst_pin.p_port, &gpio);
+
+	gpio.Pin = s_lcd_cs_pin.pin;
+	HAL_GPIO_Init(s_lcd_cs_pin.p_port, &gpio);
+
+	gpio.Pin = s_lcd_dc_pin.pin;
+	HAL_GPIO_Init(s_lcd_dc_pin.p_port, &gpio);
+
+	gpio.Pin = s_lcd_bl_pin.pin;
+	HAL_GPIO_Init(s_lcd_bl_pin.p_port, &gpio);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    lvgl_bsp_disp_gpio_deinit
+ * @brief   释放四根控制脚, 恢复复位默认态
+ *
+ * @return  0 success
+ *
+ * @note    不动端口时钟: GPIOA 上还挂着 SPI1 的 PA5/PA7 与 I2C 的 PA8,
+ *          GPIOC 也只有 PC13 这一根线, 关时钟会误伤。
+ *****************************************************************************/
+static int8_t lvgl_bsp_disp_gpio_deinit(void)
+{
+	HAL_GPIO_DeInit(s_lcd_rst_pin.p_port, s_lcd_rst_pin.pin);
+	HAL_GPIO_DeInit(s_lcd_cs_pin.p_port,  s_lcd_cs_pin.pin);
+	HAL_GPIO_DeInit(s_lcd_dc_pin.p_port,  s_lcd_dc_pin.pin);
+	HAL_GPIO_DeInit(s_lcd_bl_pin.p_port,  s_lcd_bl_pin.pin);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    lvgl_bsp_disp_pwm_init
+ * @brief   背光调光外设初始化
+ *
+ * @return  0 success
+ *
+ * @note    背光是 PA1 的开关型 GPIO(归 gpio 接口的 s_lcd_bl_pin 管), 当前没有
+ *          PWM 外设, 这里先做空实现占位; 以后真上定时器调光时在此配置。
+ *****************************************************************************/
+static int8_t lvgl_bsp_disp_pwm_init(void)
+{
+	return 0;
+}
+
+/******************************************************************************
+ * @name    lvgl_bsp_disp_pwm_deinit
+ * @brief   背光调光外设反初始化
+ *
+ * @return  0 success
+ *
+ * @note    同 pf_init: 当前无 PWM 外设, 空实现占位。
+ *****************************************************************************/
+static int8_t lvgl_bsp_disp_pwm_deinit(void)
+{
+	return 0;
+}
+
+/******************************************************************************
  * @name    lvgl_bsp_disp_delay_cb
  * @brief   延时: osDelay 返回 osStatus_t, 驱动要求 void(*)(uint32_t), 包一层丢弃返回值
  * @param   ms[in] 毫秒
@@ -171,6 +272,34 @@ static void lvgl_bsp_disp_delay_cb(uint32_t ms)
    extern 的实例调 spi_hal 的 pf_*(该实例正是 spi_hal 强类型接口的第一个实参).
    @note 一处易错点: 形参表必须与接口结构体逐字一致 —— 多写一个 void * 就会
          -Wincompatible-function-pointer-types 编译失败(本工程里这是错误不是警告) */
+
+/******************************************************************************
+ * @name    st7789t3_spi_init
+ * @brief   SPI总线初始化: 转发到 main.c 的 lcd_spi_instance
+ *
+ * @return  0 success
+ *         -1 spi instance null
+ *         -2 spi init error (见 spi_hal.c)
+ *
+ * @note    驱动在 st7789t3_init 里回调本函数。spi_hal 那侧带引用计数, 若总线
+ *          已被别的使用者init过, 这里只累加计数、不会把外设重配一遍。
+ *****************************************************************************/
+static int8_t st7789t3_spi_init(void)
+{
+	return lcd_spi_instance.pf_init(&lcd_spi_instance);
+}
+
+/******************************************************************************
+ * @name    st7789t3_spi_deinit
+ * @brief   SPI总线反初始化: 转发到 main.c 的 lcd_spi_instance
+ *
+ * @return  0 success
+ *         -1 spi instance null (见 spi_hal.c)
+ *****************************************************************************/
+static int8_t st7789t3_spi_deinit(void)
+{
+	return lcd_spi_instance.pf_deinit(&lcd_spi_instance);
+}
 
 /******************************************************************************
  * @name    st7789t3_spi_send_bytes
@@ -206,11 +335,10 @@ static int8_t st7789t3_spi_send_bytes_dma(uint8_t *pdata, uint32_t size)
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_inst
- * @brief   构造ST7789T3实例: 背光GPIO → 挂四个驱动接口 → st7789t3_inst(含面板初始化)
+ * @brief   构造ST7789T3实例: 四根控制脚GPIO → 挂四个驱动接口 → st7789t3_inst(含面板初始化)
  * @param   无
  *
  * @return  0 success
- *         -1 背光GPIO初始化失败
  *         -2 st7789t3_inst 失败(负值语义见驱动头文件 @return, -6 = 面板初始化失败)
  *
  * @note    须在 osKernelStart() 之后的任务上下文调用(内部 osDelay);
@@ -220,32 +348,30 @@ static int8_t st7789t3_spi_send_bytes_dma(uint8_t *pdata, uint32_t size)
 int8_t lvgl_bsp_disp_inst(void)
 {
 	int8_t ret = 0;
-	GPIO_InitTypeDef gpio = { 0 };
 
-	/* 1. 背光引脚(PA1): MX_GPIO_Init 未纳管此脚, 先初始化为输出并熄灭 */
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-	gpio.Pin   = ST7789T3_BL_PIN;
-	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-	gpio.Pull  = GPIO_NOPULL;
-	gpio.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(ST7789T3_BL_PORT, &gpio);
-	HAL_GPIO_WritePin(ST7789T3_BL_PORT, ST7789T3_BL_PIN, GPIO_PIN_RESET);
-
-	/* 2. 挂SPI接口(转发到 main.c 的 lcd_spi_instance) */
+	/* 1. 挂SPI接口(转发到 main.c 的 lcd_spi_instance)
+	      四根控制脚的 GPIO 配置不在这里做, 已搬进 lvgl_bsp_disp_gpio_init, 由驱动在
+	      st7789t3_init 里回调 —— 见那里的 @note */
+	st7789t3_spi_interface_instance.pf_init           = st7789t3_spi_init;
+	st7789t3_spi_interface_instance.pf_deinit         = st7789t3_spi_deinit;
 	st7789t3_spi_interface_instance.pf_send_bytes     = st7789t3_spi_send_bytes;
 	st7789t3_spi_interface_instance.pf_send_bytes_dma = st7789t3_spi_send_bytes_dma;
 
-	/* 3. 挂GPIO接口(DC/CS/RST 各自一根线、各自一个回调) */
+	/* 2. 挂GPIO接口(DC/CS/RST 各自一根线、各自一个回调) */
+	st7789t3_gpio_interface_instance.pf_init    = lvgl_bsp_disp_gpio_init;
+	st7789t3_gpio_interface_instance.pf_deinit  = lvgl_bsp_disp_gpio_deinit;
 	st7789t3_gpio_interface_instance.pf_dc_set  = lvgl_bsp_disp_dc_set;
 	st7789t3_gpio_interface_instance.pf_cs_set  = lvgl_bsp_disp_cs_set;
 	st7789t3_gpio_interface_instance.pf_rst_set = lvgl_bsp_disp_rst_set;
 
-	/* 4. 挂延时/背光接口(yield 接口已随驱动头文件一并删除: 它此前只被非空校验) */
+	/* 3. 挂延时/PWM接口(yield 接口已随驱动头文件一并删除: 它此前只被非空校验) */
 	st7789t3_delay_instance.pf_delay = lvgl_bsp_disp_delay_cb;
 
-	st7789t3_pwm_interface_instance.pf_backlight_set = lvgl_bsp_disp_backlight_set;
+	st7789t3_pwm_interface_instance.pf_init     = lvgl_bsp_disp_pwm_init;
+	st7789t3_pwm_interface_instance.pf_deinit   = lvgl_bsp_disp_pwm_deinit;
+	st7789t3_pwm_interface_instance.pf_pwm_set  = lvgl_bsp_disp_backlight_set;
 
-	/* 5. 构造驱动: 硬件复位 → SLPOUT/COLMOD/MADCTL/Gamma/INVON/DISPON(默认竖屏) */
+	/* 4. 构造驱动: 各外设 init → 硬件复位 → SLPOUT/COLMOD/MADCTL/Gamma/INVON/DISPON(默认竖屏) */
 	ret = st7789t3_inst(&st7789t3_instance,
 						&st7789t3_spi_interface_instance,
 						&st7789t3_gpio_interface_instance,

@@ -1028,16 +1028,18 @@
 #define LV_USE_SNAPSHOT 0
 
 /** 1: Enable system monitor component */
-#define LV_USE_SYSMON   0
+#define LV_USE_SYSMON   1
 #if LV_USE_SYSMON
     /** Get the idle percentage. E.g. uint32_t my_get_idle(void); */
     #define LV_SYSMON_GET_IDLE lv_os_get_idle_percent
 
     /** 1: Show CPU usage and FPS count.
      *  - Requires `LV_USE_SYSMON = 1` */
-    #define LV_USE_PERF_MONITOR 0
+    #define LV_USE_PERF_MONITOR 1
     #if LV_USE_PERF_MONITOR
-        #define LV_USE_PERF_MONITOR_POS LV_ALIGN_BOTTOM_RIGHT
+        /* 2026-09-28: 由 BOTTOM_RIGHT 改 TOP_RIGHT —— 台架上下边缘被外物挡住,
+           两块浮窗整体挪到上边缘(见下面 MEM_MONITOR_POS 同一条注释) */
+        #define LV_USE_PERF_MONITOR_POS LV_ALIGN_TOP_RIGHT
 
         /** 0: Displays performance data on the screen; 1: Prints performance data using log. */
         #define LV_USE_PERF_MONITOR_LOG_MODE 0
@@ -1046,9 +1048,13 @@
     /** 1: Show used memory and memory fragmentation.
      *     - Requires `LV_USE_STDLIB_MALLOC = LV_STDLIB_BUILTIN`
      *     - Requires `LV_USE_SYSMON = 1`*/
-    #define LV_USE_MEM_MONITOR 0
+    #define LV_USE_MEM_MONITOR 1
     #if LV_USE_MEM_MONITOR
-        #define LV_USE_MEM_MONITOR_POS LV_ALIGN_BOTTOM_LEFT
+        /* 2026-09-28: 由 BOTTOM_LEFT 改 TOP_LEFT —— 下边缘被外物挡住, 看不见.
+           注意这两个浮窗挂在 lv_layer_sys() 上(由 lv_display_create 自动创建,
+           见 display/lv_display.c 里 LV_USE_PERF/MEM_MONITOR 那两处), 永远盖在
+           UI 最上层, 挪上来后会压住表盘顶部, 属预期 */
+        #define LV_USE_MEM_MONITOR_POS LV_ALIGN_TOP_LEFT
     #endif
 #endif /*LV_USE_SYSMON*/
 

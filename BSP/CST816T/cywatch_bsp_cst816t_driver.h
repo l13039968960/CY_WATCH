@@ -47,6 +47,11 @@
 /*iic接口*/
 typedef struct
 {
+	/* iic初始化，不关心其他驱动 */
+	int8_t (*pf_init)(void);
+	/* iic反初始化 */
+	int8_t (*pf_deinit)(void);
+
 	int8_t (*pf_start)(void);
 	int8_t (*pf_stop)(void);
 	int8_t (*pf_wait_ack)(void);
@@ -71,11 +76,14 @@ typedef struct
 	void (*pf_delay)(uint32_t ms);
 } cst816t_delay_interface_t;
 
-/*时基计数器接口*/
+#ifndef OS_SUPPORTING
+/*时基计数器接口 (仅裸机) —— 中断等待靠计数到点超时; OS_SUPPORTING 下这段时间
+  由信号量的 pf_wait() 自己兜, 不需要时基, 接口与实例一并省掉*/
 typedef struct
 {
 	uint32_t (*pf_get_time)(void);
 } cst816t_timebase_interface_t;
+#endif // OS_SUPPORTING
 
 /*底层中断接口*/
 typedef struct
@@ -87,6 +95,11 @@ typedef struct
 /*gpio接口 (RST复位/唤醒引脚)*/
 typedef struct
 {
+	/* gpio初始化 */
+	int8_t (*pf_init)(void);
+	/* gpio反初始化 */
+	int8_t (*pf_deinit)(void);
+
 	/* GPIO电平输出: 0=低电平, 1=高电平 */
 	void (*pf_gpio_set_level)(uint8_t level);
 } cst816t_gpio_interface_t;
@@ -98,12 +111,19 @@ typedef struct bsp_cst816t_driver
 	cst816t_gpio_interface_t *p_gpio_interface;
 	cst816t_semaphore_interface_t *p_semaphore_interface;
 	cst816t_delay_interface_t *p_delay_interface;
+#ifndef OS_SUPPORTING
 	cst816t_timebase_interface_t *p_timebase_interface;
+#endif // OS_SUPPORTING
 	cst816t_interrupt_interface_t *p_interrupt_interface;
 
-	/*裸机中断等待状态 (ISR置位, pf_read_touch轮询)*/
-	uint8_t irq_flag;        /*中断标志*/
-	uint32_t irq_start_tick; /*中断等待起始时刻*/
+#ifndef OS_SUPPORTING
+	/*裸机中断等待状态 (ISR置位, pf_read_touch轮询) —— OS_SUPPORTING 下等待交给
+	  信号量阻塞, 这两个字段没有读者, ISR 也只释放信号量不再置标志
+	  @note irq_flag 在 ISR 里写、在 pf_read_touch 的轮询里读, 必须 volatile,
+	        否则编译器可以把 while 的读取提到循环外 */
+	volatile uint8_t irq_flag; /*中断标志*/
+	uint32_t irq_start_tick;   /*中断等待起始时刻*/
+#endif // OS_SUPPORTING
 
 	int8_t (*pf_inst)(
 		struct bsp_cst816t_driver *p_cst816t_instance,
@@ -112,7 +132,9 @@ typedef struct bsp_cst816t_driver
 		cst816t_gpio_interface_t *p_gpio_interface,
 		cst816t_semaphore_interface_t *p_semaphore_interface,
 		cst816t_delay_interface_t *p_delay_interface,
+#ifndef OS_SUPPORTING
 		cst816t_timebase_interface_t *p_timebase_interface,
+#endif // OS_SUPPORTING
 		cst816t_interrupt_interface_t *p_interrupt_interface);
 
 	int8_t (*pf_deinst)(struct bsp_cst816t_driver *p_cst816t_instance);
@@ -146,7 +168,9 @@ int8_t cst816t_inst(bsp_cst816t_driver_t *p_cst816t_instance,
 					cst816t_gpio_interface_t *p_gpio_interface,
 					cst816t_semaphore_interface_t *p_semaphore_interface,
 					cst816t_delay_interface_t *p_delay_interface,
+#ifndef OS_SUPPORTING
 					cst816t_timebase_interface_t *p_timebase_interface,
+#endif // OS_SUPPORTING
 					cst816t_interrupt_interface_t *p_interrupt_interface);
 
 /**********************************Declaring***********************************/

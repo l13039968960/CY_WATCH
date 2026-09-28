@@ -22,7 +22,17 @@
 #include "stm32f4xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "FreeRTOS.h"
+#include "task.h"
+#include "exti_hal.h"
 
+/* FreeRTOS 端口的真实 ISR(portable/GCC/ARM_CM4F/port.c), 头文件无声明, 在此补原型 */
+extern void vPortSVCHandler(void);
+extern void xPortPendSVHandler(void);
+extern void xPortSysTickHandler(void);
+
+/* SPI1 TX DMA 句柄(stm32f4xx_hal_msp.c 定义), DMA 中断要转给它 */
+extern DMA_HandleTypeDef hdma_spi1_tx;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -145,7 +155,8 @@ void UsageFault_Handler(void)
 void SVC_Handler(void)
 {
   /* USER CODE BEGIN SVCall_IRQn 0 */
-
+  /* FreeRTOS: SVC 异常由内核端口处理(启动首个任务/任务切换的软中断通道) */
+  vPortSVCHandler();
   /* USER CODE END SVCall_IRQn 0 */
   /* USER CODE BEGIN SVCall_IRQn 1 */
 
@@ -171,7 +182,8 @@ void DebugMon_Handler(void)
 void PendSV_Handler(void)
 {
   /* USER CODE BEGIN PendSV_IRQn 0 */
-
+  /* FreeRTOS: PendSV 承载上下文切换, 转发到内核端口实现 */
+  xPortPendSVHandler();
   /* USER CODE END PendSV_IRQn 0 */
   /* USER CODE BEGIN PendSV_IRQn 1 */
 
@@ -189,7 +201,13 @@ void SysTick_Handler(void)
   /* HAL 1ms 时基: HAL_Delay() / HAL_GetTick() 依赖此调用 */
   HAL_IncTick();
   /* USER CODE BEGIN SysTick_IRQn 1 */
-
+  /* FreeRTOS 与 HAL 共用本 SysTick(HAL 时基 1ms 照走): 调度器启动后把 tick 喂给内核.
+     HAL_InitTick 与 xPortStartScheduler 都会写 SysTick 重装值, 两者同为
+     configTICK_RATE_HZ=1kHz(100MHz/1000-1), 配置一致故共用无冲突 */
+  if (taskSCHEDULER_NOT_STARTED != xTaskGetSchedulerState())
+  {
+    xPortSysTickHandler();
+  }
   /* USER CODE END SysTick_IRQn 1 */
 }
 
@@ -201,5 +219,27 @@ void SysTick_Handler(void)
 /******************************************************************************/
 
 /* USER CODE BEGIN 1 */
+
+/**
+  * @brief DMA2_Stream3 中断: SPI1 TX 完成
+  *
+  *        转发给 HAL 的 DMA 处理, 最终调 HAL_SPI_TxCpltCallback 释放 LCD 信号量。
+  */
+void DMA2_Stream3_IRQHandler(void)
+{
+  HAL_DMA_IRQHandler(&hdma_spi1_tx);
+}
+
+/**
+  * @brief EXTI2 中断: CST816T 触摸 INT(PB2)
+  *
+  *        转发到 exti_hal 分发(按线号 2 反查实例) → CST816T 驱动 pf_interrupt_cb,
+  *        仅释放信号量, 不做任何 I2C/printf(软件 I2C 不可重入); 实际触摸数据
+  *        由 lvgl 任务内的 LVGL 触摸读回调取走。
+  */
+void EXTI2_IRQHandler(void)
+{
+  exti_irq_handler(GPIO_PIN_2);
+}
 
 /* USER CODE END 1 */

@@ -40,7 +40,7 @@
 #include "lv_port_disp.h"
 
 #include <stdio.h>
-#include "../../ST7789T3/adapter/cywatch_adapter_st7789t3.h"
+#include "cywatch_adapter_disp.h"
 
 /* 显示尺寸与刷新缓冲(与驱动默认方向 dir_0 竖屏一致) */
 #define LV_LCD_HOR_RES   240

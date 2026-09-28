@@ -16,7 +16,7 @@
  * Processing flow:
  *
  * lv_port_indev_init():
- *   lvgl_bsp_cst816t_inst()(触摸专用位带I2C由 main.c 建/adapter 挂载; RST PA15 +
+ *   lvgl_bsp_indev_inst()(触摸专用位带I2C由 main.c 建/adapter 挂载; RST PA15 +
  *   EXTI PB2 + ChipID 自检) → lv_indev_create(POINTER) + 注册读回调.
  * touch_indev_read_cb():
  *   LVGL每轮(lv_timer_handler)调 adapter 轮询读原始触摸帧(非阻塞)
@@ -38,7 +38,7 @@
 #include "lv_port_indev.h"
 
 #include <stdio.h>
-#include "../../CST816T/adapter/cywatch_adapter_cst816t.h"
+#include "cywatch_adapter_indev.h"
 
 /* ============================= 面板与坐标映射 ============================= */
 /* 本模块CST816T上报面板原生坐标(X≈0~240/Y≈0~280, 非12位满量程).
@@ -52,58 +52,6 @@
 #define TOUCH_SWAP_XY   0
 #define TOUCH_FLIP_X    0
 #define TOUCH_FLIP_Y    0
-
-/* 诊断打印节流(每 N 次读打一条): 轮询日志不能淹没串口, 也不能拖慢渲染 */
-#define TOUCH_LOG_ERR_PERIOD  5U
-#define TOUCH_LOG_IDLE_PERIOD 1000U
-#define TOUCH_LOG_OOB_PERIOD  100U
-
-/* ============================= 最近触摸状态 ============================= */
-/* 调试用 getter: 给上层UI取最近触摸点(显示或打印). **当前无使用者** —— 原来唯一的
-   用户是 lv_demo_app.c 的自检页, 该页连同 LVGL_BRINGUP_TEST 宏已于 2026-09-16 删除.
-   所以这三个 getter 会被链接器 GC 掉, 这是正常现象, 不是链接错误; 台架上要查触摸
-   时随便找个任务打印它即可, 不必为它保留任何页面.
-   另: 读失败时 lv_port_indev 报的也是 RELEASED, 所以"没数据"与"没触摸"在这里是
-   同一个值, 别拿它当触摸自检的通过依据 */
-static lv_coord_t s_last_x = 0;
-static lv_coord_t s_last_y = 0;
-static uint8_t s_pressed = 0;
-
-/******************************************************************************
- * @name    lv_port_indev_last_x
- * @brief   读取最近一次按下的屏幕X坐标
- * @param   无
- *
- * @return  最近X坐标(未按下时为上一次的值)
- *****************************************************************************/
-lv_coord_t lv_port_indev_last_x(void)
-{
-	return s_last_x;
-}
-
-/******************************************************************************
- * @name    lv_port_indev_last_y
- * @brief   读取最近一次按下的屏幕Y坐标
- * @param   无
- *
- * @return  最近Y坐标(未按下时为上一次的值)
- *****************************************************************************/
-lv_coord_t lv_port_indev_last_y(void)
-{
-	return s_last_y;
-}
-
-/******************************************************************************
- * @name    lv_port_indev_pressed
- * @brief   读取当前是否处于按下状态
- * @param   无
- *
- * @return  1=按下, 0=释放
- *****************************************************************************/
-uint8_t lv_port_indev_pressed(void)
-{
-	return s_pressed;
-}
 
 /******************************************************************************
  * @name    touch_coord_map
@@ -149,13 +97,10 @@ static void touch_coord_map(uint16_t raw_x, uint16_t raw_y,
  *
  * @return  无
  *
- * @note    非阻塞: adapter 固定用轮询模式直接读6字节触摸帧, 不等待中断;
- *          新按下(释放→按下沿)时printf一次坐标, 供串口日志核对缩放/方向映射
+ * @note    非阻塞: adapter 固定用轮询模式直接读6字节触摸帧, 不等待中断
  *****************************************************************************/
 static void touch_indev_read_cb(lv_indev_t *p_indev, lv_indev_data_t *p_data)
 {
-	static uint8_t s_prev_pressed = 0;
-	static uint32_t s_read_cnt = 0;   /* 读次数(每轮lv_timer_handler约1次) */
 	uint8_t gesture = 0;
 	uint8_t fingers = 0;
 	uint16_t raw_x = 0;
@@ -164,26 +109,7 @@ static void touch_indev_read_cb(lv_indev_t *p_indev, lv_indev_data_t *p_data)
 
 	(void)p_indev;
 
-	ret = lvgl_bsp_cst816t_read_touch(&gesture, &fingers, &raw_x, &raw_y);
-
-	/* 卡死定位诊断: 区分"触摸I2C读出错" vs "读正常但芯片一直报无手指"。
-	 * 出错立即打印(异常事件); 空闲(fingers==0)每1000次读打一条心跳,
-	 * 证明读路径仍在推进(每轮约1次, 1000次≈LVGL周期30s量级) */
-	if (0 != ret)
-	{
-		if (0 == (s_read_cnt % TOUCH_LOG_ERR_PERIOD))
-		{
-			printf("TOUCH ERR ret=%d\r\n", (int)ret);
-		}
-	}
-	else if (0 == fingers)
-	{
-		if (0 == (s_read_cnt % TOUCH_LOG_IDLE_PERIOD))
-		{
-			printf("TOUCH idle\r\n");
-		}
-	}
-	s_read_cnt++;
+	ret = lvgl_bsp_indev_read_touch(&gesture, &fingers, &raw_x, &raw_y);
 
 	if (0 == ret && 0 != fingers)
 	{
@@ -193,38 +119,16 @@ static void touch_indev_read_cb(lv_indev_t *p_indev, lv_indev_data_t *p_data)
 		 * 伪拖拽矢量, 与切屏动画交错后表现为页面卡死; 此处一律按释放处理 */
 		if ((raw_x >= TOUCH_RAW_SPAN_X) || (raw_y >= TOUCH_RAW_SPAN_Y))
 		{
-			/* 节流打印: 干净硬件下此分支不该频繁出现, 频繁即为芯片手势帧回归 */
-			if (0 == (s_read_cnt % TOUCH_LOG_OOB_PERIOD))
-			{
-				printf("TOUCH oob g:%u r:(%u,%u)\r\n",
-					   (unsigned)gesture, (unsigned)raw_x, (unsigned)raw_y);
-			}
 			p_data->state = LV_INDEV_STATE_RELEASED;
-			s_pressed = 0;
-			s_prev_pressed = 0;
 			return;
 		}
 
 		touch_coord_map(raw_x, raw_y, &p_data->point.x, &p_data->point.y);
 		p_data->state = LV_INDEV_STATE_PRESSED;
-		s_last_x = p_data->point.x;
-		s_last_y = p_data->point.y;
-		s_pressed = 1;
-
-		/* 新按下沿打印一次: 原始+映射坐标, 供硬件验证缩放/方向 */
-		if (0 == s_prev_pressed)
-		{
-			printf("TOUCH g:%u r:(%u,%u) m:(%d,%d)\r\n",
-				   (unsigned)gesture, (unsigned)raw_x, (unsigned)raw_y,
-				   (int)p_data->point.x, (int)p_data->point.y);
-			s_prev_pressed = 1;
-		}
 	}
 	else
 	{
 		p_data->state = LV_INDEV_STATE_RELEASED;
-		s_pressed = 0;
-		s_prev_pressed = 0;
 	}
 }
 
@@ -249,7 +153,7 @@ int8_t lv_port_indev_init(void)
 	lv_indev_t *p_indev = NULL;
 
 	/* 1. 构造CST816T(总线绑定 + RST复位 + 寄存器配置 + ChipID自检 + EXTI回调) */
-	ret = lvgl_bsp_cst816t_inst();
+	ret = lvgl_bsp_indev_inst();
 	if (0 != ret)
 	{
 		printf("TOUCH inst fail:%d\r\n", (int)ret);

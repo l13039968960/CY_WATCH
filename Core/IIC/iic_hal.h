@@ -54,11 +54,17 @@ typedef struct iic_driver
 
 	iic_delay_interface_t *p_delay_interface; /* 延时接口 */
 
+	uint8_t init_state; /* 初始化状态: 0=deinit, 1=init */
+	uint8_t ref_count;  /* 使用本外设的实例数量: 0→1 才真正初始化, 减到 0 才真正反初始化 */
+
 	/* 构造与析构 */
 	int8_t (*pf_inst)(struct iic_driver *p_iic_instance,
 					  iic_bus_t *p_bus,
 					  iic_delay_interface_t *p_delay_interface);
 	int8_t (*pf_deinst)(struct iic_driver *p_iic_instance);
+
+	int8_t (*pf_init)(struct iic_driver *p_iic_instance);
+	int8_t (*pf_deinit)(struct iic_driver *p_iic_instance);
 
 	/* 底层I2C总线操作 */
 	int8_t (*pf_start)(struct iic_driver *p_iic_instance);

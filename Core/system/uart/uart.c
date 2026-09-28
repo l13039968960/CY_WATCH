@@ -14,8 +14,9 @@
  * @brief USART1 init (PA9=TX, PA10=RX, 115200 8N1) and printf retarget.
  *
  * Processing flow:
- * call MX_USART1_UART_Init() in main() before the first printf; fputc drops
- * characters until g_uart1_ready is set, so early printf is harmless.
+ * call UART_Init() in main() before the first printf. printf 无闸门: 每个字符直接
+ * 走 HAL_UART_Transmit。若在 UART_Init() 之前调 printf, huart1.gState 还是 RESET,
+ * HAL 会直接返回而不发送(不会崩)。
  *
  * @version V1.0
  *
@@ -29,17 +30,15 @@
 #include <stdio.h>
 
 UART_HandleTypeDef huart1;
-volatile uint8_t g_uart1_ready = 0;
 
 /* printf 重定向. AC5(armcc)/AC6(armclang)/GCC 统一走 fputc(MicroLIB printf 钩子).
    AC6 定义 __GNUC__, 旧 __GNUC__ 分支会误选 _io_putchar 钩子使 printf 静默失效, 故去掉编译分支 */
 int fputc(int ch, FILE *f)
 {
     uint8_t b = (uint8_t)ch;
-    if (1 == g_uart1_ready) /* 未就绪前丢弃字符 */
-    {
-        (void)HAL_UART_Transmit(&huart1, &b, 1, 0xFFFF);
-    }
+
+    (void)HAL_UART_Transmit(&huart1, &b, 1, 0xFFFF);
+
     return ch;
 }
 
@@ -48,10 +47,9 @@ int fputc(int ch, FILE *f)
 int __io_putchar(int ch)
 {
     uint8_t b = (uint8_t)ch;
-    if (1 == g_uart1_ready)
-    {
-        (void)HAL_UART_Transmit(&huart1, &b, 1, 0xFFFF);
-    }
+
+    (void)HAL_UART_Transmit(&huart1, &b, 1, 0xFFFF);
+
     return ch;
 }
 /* USER CODE END 0 */

@@ -43,6 +43,10 @@
 /*spi接口*/
 typedef struct
 {
+	/* spi初始化，不关心其他驱动 */
+	int8_t (*pf_init)(void);
+	/* spi反初始化 */
+	int8_t (*pf_deinit)(void);
 	/* 发送字节流(命令/参数), MSB先行 */
 	int8_t (*pf_send_bytes)(uint8_t *pdata,
 							uint32_t size);
@@ -54,21 +58,28 @@ typedef struct
 /*gpio接口 (控制DC/CS/RST/背光引脚) */
 typedef struct
 {
+	/* gpio初始化 */
+	int8_t (*pf_init)(void);
+	/* gpio反初始化 */
+	int8_t (*pf_deinit)(void);
+
 	/* DC(数据/命令选择): 0=命令, 1=数据 */
 	int8_t (*pf_dc_set)(uint8_t level);
-
 	/* CS(片选): 0=选中, 1=释放 */
 	int8_t (*pf_cs_set)(uint8_t level);
-
 	/* RST(硬件复位): 0=复位, 1=正常运行 */
 	int8_t (*pf_rst_set)(uint8_t level);
-
 } st7789t3_gpio_interface_t;
 
 typedef struct
 {
+	/* pwm初始化 */
+	int8_t (*pf_init)(void);
+	/* pwm反初始化 */
+	int8_t (*pf_deinit)(void);
+
 	/* 背光: 0=关闭, 非0=点亮(具体占空比由底层实现) */
-	void (*pf_backlight_set)(uint8_t level);
+	void (*pf_pwm_set)(uint8_t level);
 } st7789t3_pwm_interface_t;
 
 /*延时函数接口*/

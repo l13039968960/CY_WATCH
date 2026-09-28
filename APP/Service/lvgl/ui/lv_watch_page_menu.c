@@ -33,7 +33,7 @@
  *       占位按钮 user_data 为 NULL(点击只打印).
  ******************************************************************************/
 #include "lv_watch_page.h"
-#include "../../APP/EasyAPP/port/easyapp_port.h"
+#include "easyapp_port.h"
 
 #include <stdio.h>
 

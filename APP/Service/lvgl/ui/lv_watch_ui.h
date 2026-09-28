@@ -64,10 +64,11 @@ int8_t lv_watch_ui_init(void);
  * @return  管理器指针(初始化后恒非 NULL); lv_watch_ui_init() 之前调用返回的
  *          实例虽非 NULL 但未初始化(注册表为空)
  *
- * @note    只为让 lv_watch_selftest.c 能观察生产管理器而开的口子 —— 管理器实例
- *          是本文件的 static, 没有它自检就只能靠 watch_switch() 黑箱驱动,
- *          看不到缓冲区/状态/返回码. **页面代码仍然只走 watch_switch()**,
- *          别拿这个函数去绕过它切页.
+ * @note    为观察生产管理器而开的口子 —— 管理器实例是本文件的 static, 没有它
+ *          台架上就只能靠 watch_switch() 黑箱驱动, 看不到缓冲区/状态/返回码.
+ *          **页面代码仍然只走 watch_switch()**, 别拿这个函数去绕过它切页.
+ *          (它最初的唯一使用者是 lv_watch_selftest.c, 该模块已于 2026-09-28 删除,
+ *          所以本函数当前零调用者; 留着是台架诊断口子)
  * @note    与所有 PageMem API 同契约: 只能在 "lvgl" 任务里调.
  *****************************************************************************/
 page_mgr_t *lv_watch_ui_mgr(void);

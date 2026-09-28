@@ -44,9 +44,9 @@
  *       没编进来, 写 flex 会直接编译不过(移植时踩过).
  ******************************************************************************/
 #include "lv_watch_page.h"
-#include "../../APP/EasyAPP/port/easyapp_port.h"
-#include "../../APP/APPPAGE/DataModel/cywatch_app_datamodel.h"
-#include "../../system/Rtc/cywatch_rtc.h"
+#include "easyapp_port.h"
+#include "cywatch_app_datamodel.h"
+#include "cywatch_rtc.h"
 #include <stdio.h>
 
 /* 子集字库(实现在 LVGL/assets/fonts, 生成脚本 MDK-ARM/gen_watch_fonts.py):

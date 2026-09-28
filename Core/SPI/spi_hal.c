@@ -29,6 +29,8 @@
 #include "spi_hal.h"
 
 static int8_t spi_deinst(spi_driver_t *p_spi_instance);
+static int8_t spi_init(spi_driver_t *p_spi_instance);
+static int8_t spi_deinit(spi_driver_t *p_spi_instance);
 static int8_t spi_transmit(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
 static int8_t spi_receive(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
 static int8_t spi_transmit_receive(spi_driver_t *p_spi_instance, uint8_t *ptx, uint8_t *prx, uint32_t size);
@@ -202,9 +204,6 @@ static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uin
 	}
 #endif // OS_SUPPORTING
 
-	/* 清完成标志 */
-	p_spi_instance->tx_complete = 0;
-
 #ifdef OS_SUPPORTING
 	/* OS: 启动DMA后阻塞等待信号量(由HAL_SPI_TxCpltCallback释放) */
 	if (HAL_OK != HAL_SPI_Transmit_DMA(&p_spi_instance->hspi,
@@ -221,7 +220,8 @@ static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uin
 
 	return 0;
 #else
-	/* 裸机: 记录启动时刻, 启动DMA后计数器轮询直到完成/超时 */
+	/* 裸机: 清完成标志, 记录启动时刻, 启动DMA后计数器轮询直到完成/超时 */
+	p_spi_instance->tx_complete = 0;
 	p_spi_instance->tx_start_tick =
 		p_spi_instance->p_timebase_interface->pf_get_time();
 
@@ -247,12 +247,91 @@ static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uin
 /********************************* 构造与析构 *********************************/
 
 /******************************************************************************
- * @name    spi_deinst
- * @brief   SPI驱动析构: 反初始化外设并清除函数指针
+ * @name    spi_init
+ * @brief   SPI驱动初始化: 初始化SPI外设到运行态
  * @param   p_spi_instance[in]
  *
  * @return  0 success
  *         -1 spi_instance null
+ *         -2 spi init error
+ *
+ * @note    引脚(PA5/PA7)、TX DMA、NVIC与SPI1时钟都在 HAL_SPI_MspInit 里配置,
+ *          由 HAL_SPI_Init 内部回调完成, 本函数不用重复开时钟。
+ *
+ * @note    引用计数: ref_count 由 0→1 时才真正初始化外设, 已有使用者时只累加计数
+ *          (同一实例被重复init不会把外设重配一遍)。
+ *****************************************************************************/
+static int8_t spi_init(spi_driver_t *p_spi_instance)
+{
+	if (NULL == p_spi_instance)
+	{
+		return -1;
+	}
+
+	/* 首个使用者才真正初始化SPI外设(MspInit里配引脚/DMA/NVIC/时钟) */
+	if (0 == p_spi_instance->ref_count)
+	{
+		if (HAL_OK != HAL_SPI_Init(&p_spi_instance->hspi))
+		{
+			return -2;
+		}
+
+		p_spi_instance->init_state = 1;
+	}
+
+	p_spi_instance->ref_count++;
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    spi_deinit
+ * @brief   SPI驱动反初始化: 关闭SPI外设
+ * @param   p_spi_instance[in]
+ *
+ * @return  0 success
+ *         -1 spi_instance null
+ *
+ * @note    HAL_SPI_DeInit 会回调 HAL_SPI_MspDeInit: 关SPI1时钟、DeInit PA5/PA7、
+ *          HAL_DMA_DeInit。SPI1 是LCD独占, 关时钟不会误伤其他外设。
+ *
+ * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设。
+ *****************************************************************************/
+static int8_t spi_deinit(spi_driver_t *p_spi_instance)
+{
+	if (NULL == p_spi_instance)
+	{
+		return -1;
+	}
+
+	/* 退出一个使用者(已在0则不再减, 防uint8下溢后永远回不到0) */
+	if (p_spi_instance->ref_count > 0)
+	{
+		p_spi_instance->ref_count--;
+	}
+
+	/* 最后一个使用者退出时才真正关闭SPI外设 */
+	if (0 == p_spi_instance->ref_count)
+	{
+		HAL_SPI_DeInit(&p_spi_instance->hspi);
+
+		p_spi_instance->init_state = 0;
+	}
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    spi_deinst
+ * @brief   SPI驱动析构: 清除函数指针
+ * @param   p_spi_instance[in]
+ *
+ * @return  0 success
+ *         -1 spi_instance null
+ *         -2 仍有使用者(ref_count != 0), 本次不析构
+ *
+ * @note    本函数不关外设 —— 关闭SPI外设走pf_deinit。析构会清空pf_transmit等
+ *          全部指针, 等于废掉整条总线, 所以只在没有使用者时才允许执行。
  *****************************************************************************/
 static int8_t spi_deinst(spi_driver_t *p_spi_instance)
 {
@@ -261,18 +340,27 @@ static int8_t spi_deinst(spi_driver_t *p_spi_instance)
 		return -1;
 	}
 
-	HAL_SPI_DeInit(&p_spi_instance->hspi);
+	/* 仍有使用者: 清指针会把复用本实例的其他设备一起废掉 */
+	if (0 != p_spi_instance->ref_count)
+	{
+		return -2;
+	}
 
-#ifdef OS_SUPPORTING
 	p_spi_instance->p_semaphore_interface = NULL;
-#endif // OS_SUPPORTING
 	p_spi_instance->p_delay_interface = NULL;
+#ifndef OS_SUPPORTING
 	p_spi_instance->p_timebase_interface = NULL;
 	p_spi_instance->tx_complete = 0;
 	p_spi_instance->tx_start_tick = 0;
+#endif // OS_SUPPORTING
+
+	p_spi_instance->init_state = 0;
+	p_spi_instance->ref_count = 0;
 
 	p_spi_instance->pf_inst = NULL;
 	p_spi_instance->pf_deinst = NULL;
+	p_spi_instance->pf_init = NULL;
+	p_spi_instance->pf_deinit = NULL;
 	p_spi_instance->pf_transmit = NULL;
 	p_spi_instance->pf_receive = NULL;
 	p_spi_instance->pf_transmit_receive = NULL;
@@ -283,29 +371,32 @@ static int8_t spi_deinst(spi_driver_t *p_spi_instance)
 
 /******************************************************************************
  * @name    spi_driver_inst
- * @brief   SPI驱动构造函数: 加载配置、注入接口、初始化内嵌句柄、挂载函数指针
+ * @brief   SPI驱动构造函数: 加载配置、装配内嵌句柄、注入接口、挂载函数指针
+ *
+ *          本函数不碰硬件, SPI外设的真正初始化在pf_init()里做。
+ *
  * @param   p_spi_instance[out]       SPI驱动实例
  * @param   p_cfg[in]                SPI硬件配置
- * @param   p_semaphore_interface[in] OS信号量接口(OS_SUPPORTING)
+ * @param   p_semaphore_interface[in] OS信号量接口(两种模式都收, 裸机模式下不参与发送)
  * @param   p_delay_interface[in]     延时接口(由调用方注入)
- * @param   p_timebase_interface[in]  时基计数器接口
+ * @param   p_timebase_interface[in]  时基计数器接口(仅裸机模式, OS_SUPPORTING 下不传)
  *
  * @return  0 success
  *         -1 spi_instance null
  *         -2 cfg null
  *         -3 spi base null
- *         -4 semaphore null (OS_SUPPORTING)
+ *         -4 semaphore null
  *         -5 delay null
- *         -6 timebase null
- *         -7 spi init error
+ *         -6 timebase null (仅裸机模式, OS_SUPPORTING 下不会返回)
  *****************************************************************************/
 int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 					   spi_cfg_t *p_cfg,
-#ifdef OS_SUPPORTING
 					   spi_semaphore_interface_t *p_semaphore_interface,
+					   spi_delay_interface_t *p_delay_interface
+#ifndef OS_SUPPORTING
+					   , spi_timebase_interface_t *p_timebase_interface
 #endif // OS_SUPPORTING
-					   spi_delay_interface_t *p_delay_interface,
-					   spi_timebase_interface_t *p_timebase_interface)
+)
 {
 	if (NULL == p_spi_instance)
 	{
@@ -322,14 +413,12 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 		return -3;
 	}
 
-#ifdef OS_SUPPORTING
 	if (NULL == p_semaphore_interface ||
 		NULL == p_semaphore_interface->pf_wait ||
 		NULL == p_semaphore_interface->pf_release)
 	{
 		return -4;
 	}
-#endif // OS_SUPPORTING
 
 	if (NULL == p_delay_interface ||
 		NULL == p_delay_interface->pf_delay_us)
@@ -337,14 +426,20 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 		return -5;
 	}
 
+#ifndef OS_SUPPORTING
 	if (NULL == p_timebase_interface ||
 		NULL == p_timebase_interface->pf_get_time)
 	{
 		return -6;
 	}
+#endif // OS_SUPPORTING
 
 	/* 加载硬件配置 */
 	p_spi_instance->cfg = *p_cfg;
+
+	/* 实例状态: 尚未初始化, 无使用者 */
+	p_spi_instance->init_state = 0;
+	p_spi_instance->ref_count = 0;
 
 	/* 构建内嵌SPI句柄(hspi 为首个成员, 供DMA完成回调反查实例) */
 	p_spi_instance->hspi.Instance = p_cfg->p_spi_base;
@@ -357,25 +452,21 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 		p_cfg->p_hdma_tx->Parent = &p_spi_instance->hspi;
 	}
 
-	/* 初始化SPI外设 */
-	if (HAL_OK != HAL_SPI_Init(&p_spi_instance->hspi))
-	{
-		return -7;
-	}
-
 	/* 注入接口 */
-#ifdef OS_SUPPORTING
 	p_spi_instance->p_semaphore_interface = p_semaphore_interface;
-#endif // OS_SUPPORTING
 	p_spi_instance->p_delay_interface = p_delay_interface;
+#ifndef OS_SUPPORTING
 	p_spi_instance->p_timebase_interface = p_timebase_interface;
 	p_spi_instance->tx_complete = 0;
 	p_spi_instance->tx_start_tick = 0;
+#endif // OS_SUPPORTING
 
 	/* 挂载函数指针 (形参类型与头文件字段一致: spi_driver_t *, 可直接赋值;
 	 * 若仍写成 void *, AC6 会以 incompatible-function-pointer-types **报错**) */
 	p_spi_instance->pf_inst = spi_driver_inst;
 	p_spi_instance->pf_deinst = spi_deinst;
+	p_spi_instance->pf_init = spi_init;
+	p_spi_instance->pf_deinit = spi_deinit;
 	p_spi_instance->pf_transmit = spi_transmit;
 	p_spi_instance->pf_receive = spi_receive;
 	p_spi_instance->pf_transmit_receive = spi_transmit_receive;

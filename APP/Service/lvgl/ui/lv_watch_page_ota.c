@@ -83,7 +83,7 @@
  ******************************************************************************/
 #include "lv_watch_page_ota.h"
 #include "lv_watch_page.h"
-#include "../../APP/EasyAPP/port/easyapp_port.h"
+#include "easyapp_port.h"
 
 #include <stdio.h>
 #include <string.h>

@@ -1,2 +1,62 @@
 .vscode
 Script/Doc/*
+# 但文档本身要版本化, 上面那行会把 .md 一并挡掉
+!Script/Doc/*.md
+.claude
+
+# ---- Keil MDK-ARM 构建产物 ----
+# 这些文件都由编译生成, 每次构建内容都变, 入库只会产生噪音 diff.
+# 按目录限定范围: 全仓同类扩展名的文件实测只在 Project/MDK_ARM/ 下, 限死目录
+# 可避免将来别处出现同名 .hex/.map 之类被误伤.
+# 不在此列(保持跟踪): CY_WATCH.uvprojx(工程文件)、CY_WATCH.uvoptx(IDE 选项,
+# 含烧录/调试配置)、CY_WATCH.sct、DebugConfig/*.dbgconf
+Project/MDK_ARM/*.o
+Project/MDK_ARM/*.d
+Project/MDK_ARM/*.crf
+Project/MDK_ARM/*.dep
+Project/MDK_ARM/*.axf
+Project/MDK_ARM/*.hex
+Project/MDK_ARM/*.map
+Project/MDK_ARM/*.htm
+Project/MDK_ARM/*.lnp
+Project/MDK_ARM/*.lst
+Project/MDK_ARM/*.plg
+Project/MDK_ARM/*.iex
+Project/MDK_ARM/build.log
+
+# uVision 界面窗口布局, 文件名带用户名, 每人一份, 不入库
+Project/MDK_ARM/*.uvguix.*
+
+# ---- LVGL 本体: 只版本化源码 ----
+# 编译实际只用到 lvgl/*.h 与 lvgl/src/**. 已实测: 把下面这些子目录全部移走后
+# 全量重建仍是 "0 Error(s), 0 Warning(s)", 且产物大小一字不差
+# (Code=175996 RO-data=42580 RW-data=288 ZI-data=88200), 故确认它们不必入库.
+# 合计约 215 MB 的上游测试/示例/文档/CI/脚手架/打包脚本.
+MIddleWares/LVGL/lvgl/.devcontainer/
+MIddleWares/LVGL/lvgl/.github/
+MIddleWares/LVGL/lvgl/configs/
+MIddleWares/LVGL/lvgl/demos/
+MIddleWares/LVGL/lvgl/docs/
+MIddleWares/LVGL/lvgl/env_support/
+MIddleWares/LVGL/lvgl/examples/
+MIddleWares/LVGL/lvgl/libs/
+MIddleWares/LVGL/lvgl/scripts/
+MIddleWares/LVGL/lvgl/tests/
+MIddleWares/LVGL/lvgl/xmls/
+MIddleWares/LVGL/lvgl/zephyr/
+
+# ---- CMSIS 里工程零引用的部分 (84 MB / 621 个文件) ----
+# 实测: CY_WATCH.uvprojx 里 "CMSIS/DSP" 与 "CMSIS/NN" 出现 0 次, 四个
+# arm_cortexM4*_math.lib 也一个没被引用; 且全工程源码无人 include
+# arm_math.h / arm_common_tables.h / arm_nnfunctions.h.
+# 仅移出版本管理, 磁盘文件保留 —— 将来要用, 删掉这三行重新 git add 即可.
+Driver/CMSIS/DSP/
+Driver/CMSIS/NN/
+Driver/CMSIS/Lib/
+
+# ---- 编辑器/手工备份残留 ----
+*.bak
+*.bak_*
+# Python 运行残留 (Script/ 下的脚本)
+__pycache__/
+*.pyc
