@@ -60,7 +60,7 @@
  *       `LV_USE_OS = LV_OS_NONE`, LVGL 内部**没有任何锁**. 本管理器会调
  *       lv_obj_xxx / lv_screen_load_anim, 因此**所有 API 只能在 "lvgl" 任务里调**
  *       —— 也就是 lv_timer_handler 的上下文, 与 widget 事件回调同一个任务
- *       (见 service/Lvgl/cywatch_service_Lvgl.h 的跨任务访问契约).
+ *       (见 service/Lvgl/cywatch_service_lvgl.h 的跨任务访问契约).
  *         1. 别的任务(AppCore/HeartRate/...)要切页, 必须经 osMessageQueue 把请求
  *            投给 lvgl 任务消费, **不能**直接调 page_mgr_switch;
  *         2. ISR 里禁止调用;

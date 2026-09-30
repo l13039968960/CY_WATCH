@@ -7,7 +7,7 @@
  *
  * @par dependencies
  * - lvgl.h
- * - ../Lvgl_PageManger/PageMem.h
+ * - ../ui_manger/PageMem.h
  *
  * @author zw1194
  *
@@ -65,7 +65,7 @@
 
 #include "lvgl.h"
 
-#include "../Lvgl_PageManger/PageMem.h"
+#include "../ui_manger/PageMem.h"
 
 /* 硬件 RTC(system/Rtc). 本目录第一次 include system/ 下的东西, 可以接受的理由:
    cywatch_rtc.h 是**刻意 HAL-free** 的公开头(它自己的 @par dependencies 只列

@@ -3,7 +3,7 @@
  *
  * All Rights Reserved.
  *
- * @file cywatch_service_Lvgl.h
+ * @file cywatch_service_lvgl.h
  *
  * @par dependencies
  * - stdint.h

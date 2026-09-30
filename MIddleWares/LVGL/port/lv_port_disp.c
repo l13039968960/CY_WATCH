@@ -6,6 +6,7 @@
  * @file lv_port_disp.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_port_disp.h
  * - ../../ST7789T3/adapter/cywatch_adapter_st7789t3.h
  *
@@ -39,13 +40,14 @@
  ******************************************************************************/
 #include "lv_port_disp.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 #include "cywatch_adapter_disp.h"
 
 /* 显示尺寸与刷新缓冲(与驱动默认方向 dir_0 竖屏一致) */
 #define LV_LCD_HOR_RES   240
 #define LV_LCD_VER_RES   280
-#define LV_LCD_BUF_LINES 40   /* 240*40*2 = 19.2KB 部分渲染单缓冲 */
+#define LV_LCD_BUF_LINES 20   /* 240*40*2 = 19.2KB 部分渲染单缓冲 */
 
 /* LVGL渲染缓冲: 16字节对齐(LVGL 9要求), PARTIAL单缓冲 */
 static uint8_t s_disp_buf[LV_LCD_HOR_RES * LV_LCD_BUF_LINES * 2]
@@ -98,7 +100,7 @@ int8_t lv_port_disp_init(void)
 	ret = lvgl_bsp_disp_inst();
 	if (0 != ret)
 	{
-		printf("LCD inst fail:%d\r\n", (int)ret);
+		log_printf("LCD inst fail:%d\r\n", (int)ret);
 		return -1;
 	}
 
@@ -109,7 +111,7 @@ int8_t lv_port_disp_init(void)
 	p_disp = lv_display_create(LV_LCD_HOR_RES, LV_LCD_VER_RES);
 	if (NULL == p_disp)
 	{
-		printf("LCD lv_display_create fail\r\n");
+		log_printf("LCD lv_display_create fail\r\n");
 		return -2;
 	}
 

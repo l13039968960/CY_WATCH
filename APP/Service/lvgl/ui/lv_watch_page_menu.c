@@ -6,6 +6,7 @@
  * @file lv_watch_page_menu.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_watch_page.h
  * - lvgl.h
  *
@@ -35,6 +36,7 @@
 #include "lv_watch_page.h"
 #include "easyapp_port.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 
 /* 子集字库(实现在 LVGL/assets/fonts, 生成脚本 MDK-ARM/gen_watch_fonts.py):
@@ -114,7 +116,7 @@ static void watch_menu_btn_cb(lv_event_t *e)
 	}
 	else
 	{
-		printf("WATCH menu btn (placeholder)\r\n");
+		log_printf("WATCH menu btn (placeholder)\r\n");
 	}
 }
 
@@ -187,7 +189,7 @@ static void watch_menu_create(page_base_t *p_page)
 
 	p_page->obj = scr;
 
-	printf("WATCH page create ->MENU\r\n");
+	log_printf("WATCH page create ->MENU\r\n");
 }
 
 /******************************************************************************

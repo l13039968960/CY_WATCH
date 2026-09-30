@@ -3,10 +3,11 @@
  *
  * All Rights Reserved.
  *
- * @file cywatch_service_Lvgl.c
+ * @file cywatch_service_lvgl.c
  *
  * @par dependencies
- * - cywatch_service_Lvgl.h
+ * - cywatch_log.h
+ * - cywatch_service_lvgl.h
  * - ../../LVGL/port/lv_port_disp.h
  * - ../../LVGL/port/lv_port_indev.h
  * - ../../LVGL/port/lv_watch_ui.h
@@ -46,10 +47,11 @@
  *       这期间不出触摸、不跑 timer —— 单缓冲下属必然. 优先级用 Normal 让
  *       configUSE_TIME_SLICING 把这段阻塞切给同级任务, 不会饿死 appcore/storage.
  *
- * @note 跨任务 LVGL 访问契约见 cywatch_service_Lvgl.h 头注释(必读).
+ * @note 跨任务 LVGL 访问契约见 cywatch_service_lvgl.h 头注释(必读).
  ******************************************************************************/
-#include "cywatch_service_Lvgl.h"
+#include "cywatch_service_lvgl.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 #include "lvgl.h"
 #include "lv_port_disp.h"
@@ -168,7 +170,7 @@ static void service_lvgl_run(void *pvParameters)
 			error_cnt++;
 			if (error_cnt >= SERVICE_LVGL_INIT_RETRY_MAX)
 			{
-				printf("LVGL: display init failed %d times\r\n", error_cnt);
+				log_printf("LVGL: display init failed %d times\r\n", error_cnt);
 				ServiceState = EVT_ERROR;
 				break;
 			}
@@ -183,7 +185,7 @@ static void service_lvgl_run(void *pvParameters)
 				error_cnt++;
 				if (error_cnt >= SERVICE_LVGL_INIT_RETRY_MAX)
 				{
-					printf("LVGL: touch init failed %d times\r\n", error_cnt);
+					log_printf("LVGL: touch init failed %d times\r\n", error_cnt);
 					ServiceState = EVT_ERROR;
 					break;
 				}
@@ -194,7 +196,7 @@ static void service_lvgl_run(void *pvParameters)
 			/* 4. 载入手表UI(必须在显示/触摸端口就绪之后) */
 			if (0 != lv_watch_ui_init())
 			{
-				printf("LVGL: watch UI create failed\r\n");
+				log_printf("LVGL: watch UI create failed\r\n");
 				ServiceState = EVT_ERROR;
 				break;
 			}
@@ -213,7 +215,7 @@ static void service_lvgl_run(void *pvParameters)
 			/* 终端错误态: 只报一次, 之后空转让出(不自愈, 理由见文件头 @note) */
 			if (0 == s_error_reported)
 			{
-				printf("LVGL: service stopped in ERROR state\r\n");
+				log_printf("LVGL: service stopped in ERROR state\r\n");
 				s_error_reported = 1;
 			}
 			osDelay(SERVICE_LVGL_ERROR_TICK);
@@ -235,7 +237,7 @@ static void service_lvgl_run(void *pvParameters)
  *         -1 任务创建失败
  *
  * @note    在 osKernelInitialize() 之后、osKernelStart() 之前调用; 设备实例化
- *          (含 osDelay)在任务体内做, 见 cywatch_service_Lvgl.c 文件头
+ *          (含 osDelay)在任务体内做, 见 cywatch_service_lvgl.c 文件头
  *****************************************************************************/
 int8_t service_lvgl_init(void)
 {
@@ -243,7 +245,7 @@ int8_t service_lvgl_init(void)
 
 	if (NULL == osThreadNew(service_lvgl_run, NULL, &g_service_lvgl_attr))
 	{
-		printf("LVGL: osThreadNew failed\r\n");
+		log_printf("LVGL: osThreadNew failed\r\n");
 		return -1;
 	}
 

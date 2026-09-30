@@ -6,6 +6,7 @@
  * @file lv_watch_page_heart.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_watch_page.h
  * - lvgl.h
  *
@@ -36,6 +37,7 @@
 #include "lv_watch_page.h"
 #include "easyapp_port.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 
 /* 子集字库(实现在 LVGL/assets/fonts, 生成脚本 MDK-ARM/gen_watch_fonts.py):
@@ -250,7 +252,7 @@ static void watch_heart_create(page_base_t *p_page)
 	p_page->obj = scr;
 	watch_heart_render(p_heart);
 
-	printf("WATCH page create ->HEART\r\n");
+	log_printf("WATCH page create ->HEART\r\n");
 }
 
 /******************************************************************************
@@ -277,7 +279,7 @@ static void watch_heart_destroy(page_base_t *p_page)
 	p_heart->p_chart = NULL;
 	p_heart->p_series = NULL;
 
-	printf("WATCH page destroy ->HEART\r\n");
+	log_printf("WATCH page destroy ->HEART\r\n");
 }
 
 /******************************************************************************

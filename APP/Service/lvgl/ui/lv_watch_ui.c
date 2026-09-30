@@ -6,6 +6,7 @@
  * @file lv_watch_ui.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_watch_ui.h
  * - lv_watch_page.h
  * - lvgl.h
@@ -68,6 +69,7 @@
 
 #include "lv_watch_page.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 
 /***********************************Defines************************************/
@@ -148,18 +150,18 @@ void watch_switch(uint16_t page_id, lv_screen_load_anim_t anim)
 
 	if (NULL == p_page)
 	{
-		printf("WATCH nav: id 0x%04X not found\r\n", (unsigned)page_id);
+		log_printf("WATCH nav: id 0x%04X not found\r\n", (unsigned)page_id);
 		return;
 	}
 
 	ret = page_mgr_switch(&s_watch_mgr, p_page, anim);
 	if (0 != ret)
 	{
-		printf("WATCH nav: switch failed (%d)\r\n", (int)ret);
+		log_printf("WATCH nav: switch failed (%d)\r\n", (int)ret);
 		return;
 	}
 
-	printf("WATCH nav ->%s\r\n", watch_page_name(p_page));
+	log_printf("WATCH nav ->%s\r\n", watch_page_name(p_page));
 }
 
 /******************************************************************************
@@ -354,7 +356,7 @@ static void watch_model_timer_cb(lv_timer_t *p_timer)
 
 	if (0 == (s_tick % 10))
 	{
-		printf("WATCH tick=%lu\r\n", (unsigned long)s_tick);
+		log_printf("WATCH tick=%lu\r\n", (unsigned long)s_tick);
 	}
 }
 
@@ -379,7 +381,7 @@ int8_t lv_watch_ui_init(void)
 	/* 防重复初始化: 重复调会把缓冲区清空, 而旧屏幕还挂在显示上 → 无人认领 */
 	if (0 != s_inited)
 	{
-		printf("WATCH already inited\r\n");
+		log_printf("WATCH already inited\r\n");
 		return 0;
 	}
 
@@ -393,31 +395,31 @@ int8_t lv_watch_ui_init(void)
 	ret = watch_page_home_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		printf("WATCH register HOME failed (%d)\r\n", (int)ret);
+		log_printf("WATCH register HOME failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_menu_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		printf("WATCH register MENU failed (%d)\r\n", (int)ret);
+		log_printf("WATCH register MENU failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_heart_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		printf("WATCH register HEART failed (%d)\r\n", (int)ret);
+		log_printf("WATCH register HEART failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_spo2_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		printf("WATCH register SPO2 failed (%d)\r\n", (int)ret);
+		log_printf("WATCH register SPO2 failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_ota_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		printf("WATCH register OTA failed (%d)\r\n", (int)ret);
+		log_printf("WATCH register OTA failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 
@@ -434,7 +436,7 @@ int8_t lv_watch_ui_init(void)
 						  LV_SCR_LOAD_ANIM_NONE);
 	if (0 != ret)
 	{
-		printf("WATCH switch HOME failed (%d)\r\n", (int)ret);
+		log_printf("WATCH switch HOME failed (%d)\r\n", (int)ret);
 		return -3;
 	}
 

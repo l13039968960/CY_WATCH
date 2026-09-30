@@ -7,7 +7,7 @@
  *
  * @par dependencies
  * - lvgl.h
- * - ../Lvgl_PageManger/PageMem.h
+ * - ../ui_manger/PageMem.h
  *
  * @author zw1194
  *
@@ -23,7 +23,7 @@
  *   3. 切到 home(瞬切), home 的 pf_create 在这一步才被调到.
  *   menu/heart 的控件到**第一次切过去时**才建(懒创建, 省 LVGL 内存池).
  *
- * 页面结构/生命周期全部由 PageMem 托管, 见 ../Lvgl_PageManger/PageMem.h:
+ * 页面结构/生命周期全部由 PageMem 托管, 见 ../ui_manger/PageMem.h:
  *   最近3页缓冲区(LRU), 超出即淘汰 + 下次切到时 pf_create 重建.
  *   本文件不自己 lv_obj_delete 页面根屏幕, 也不在 pf_* 回调里再发起切页.
  *
@@ -51,7 +51,7 @@
 
 #include <stdint.h>
 
-#include "../Lvgl_PageManger/PageMem.h"
+#include "../ui_manger/PageMem.h"
 
 /* 注册手表UI三页并加载表盘首页; 0=成功, 见 .c 的 @return */
 int8_t lv_watch_ui_init(void);

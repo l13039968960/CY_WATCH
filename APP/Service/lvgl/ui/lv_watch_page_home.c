@@ -6,6 +6,7 @@
  * @file lv_watch_page_home.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_watch_page.h
  * - lvgl.h
  * - ../../system/Rtc/cywatch_rtc.h (cywatch_rtc_time_t, 经 watch_model_datetime 取时间)
@@ -47,6 +48,7 @@
 #include "easyapp_port.h"
 #include "cywatch_app_datamodel.h"
 #include "cywatch_rtc.h"
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 
 /* 子集字库(实现在 LVGL/assets/fonts, 生成脚本 MDK-ARM/gen_watch_fonts.py):
@@ -307,7 +309,7 @@ static void watch_home_create(page_base_t *p_page)
 	p_page->obj = scr;
 	watch_home_render(p_home);
 
-	printf("WATCH page create ->HOME\r\n");
+	log_printf("WATCH page create ->HOME\r\n");
 }
 
 /******************************************************************************
@@ -338,7 +340,7 @@ static void watch_home_destroy(page_base_t *p_page)
 		p_home->p_card[i] = NULL;
 	}
 
-	printf("WATCH page destroy ->HOME\r\n");
+	log_printf("WATCH page destroy ->HOME\r\n");
 }
 
 /******************************************************************************

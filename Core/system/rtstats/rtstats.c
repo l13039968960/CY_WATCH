@@ -6,6 +6,7 @@
  * @file rtstats.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - rtstats.h
  * - stm32f4xx_hal.h
  * - FreeRTOS.h / task.h (vTaskList / vTaskGetRunTimeStats / 内核堆查询)
@@ -43,6 +44,7 @@
 #include "rtstats.h"
 #include "stm32f4xx_hal.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 #include "FreeRTOS.h" /* 必须先于 task.h */
 #include "task.h"
@@ -147,17 +149,17 @@ static void rtstats_dump(void)
 {
 	static char buf[RTSTATS_BUF_SIZE];
 
-	printf("\r\n===== FreeRTOS runtime stats =====\r\n");
-	printf("Heap: free %u B, min-ever-free %u B\r\n",
+	log_printf("\r\n===== FreeRTOS runtime stats =====\r\n");
+	log_printf("Heap: free %u B, min-ever-free %u B\r\n",
 		   xPortGetFreeHeapSize(), xPortGetMinimumEverFreeHeapSize());
 
-	printf("Task\t\tState\tPrio\tStack\tNum\r\n");
+	log_printf("Task\t\tState\tPrio\tStack\tNum\r\n");
 	vTaskList(buf);
-	printf("%s", buf);
+	log_printf("%s", buf);
 
-	printf("Task\t\tAbs Time\t%% Time\r\n");
+	log_printf("Task\t\tAbs Time\t%% Time\r\n");
 	vTaskGetRunTimeStats(buf);
-	printf("%s", buf);
+	log_printf("%s", buf);
 }
 
 /******************************************************************************
@@ -193,7 +195,7 @@ int8_t rtstats_start(void)
 {
 	if (NULL == osThreadNew(rtstats_task, NULL, &g_rtstats_attr))
 	{
-		printf("RTSTATS: osThreadNew failed\r\n");
+		log_printf("RTSTATS: osThreadNew failed\r\n");
 		return -1;
 	}
 

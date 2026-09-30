@@ -6,6 +6,7 @@
  * @file lv_watch_page_spo2.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_watch_page.h
  * - ../../APP/APPPAGE/DataModel/cywatch_app_datamodel.h
  * - ../../APP/EasyAPP/port/easyapp_port.h
@@ -64,6 +65,7 @@
 #include "easyapp_port.h"
 #include "cywatch_app_datamodel.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 
 /* 子集字库(实现在 LVGL/assets/fonts, 生成脚本 MDK-ARM/gen_watch_fonts.py):
@@ -255,7 +257,7 @@ static void watch_spo2_timer_cb(lv_timer_t *p_timer)
 		}
 
 		p_spo2->state = WATCH_SPO2_DONE;
-		printf("WATCH spo2 done: %u%% (%lus)\r\n",
+		log_printf("WATCH spo2 done: %u%% (%lus)\r\n",
 			   (unsigned)p_spo2->value, (unsigned long)p_spo2->elapsed_s);
 	}
 
@@ -286,7 +288,7 @@ static void watch_spo2_btn_cb(lv_event_t *e)
 		}
 
 		p_spo2->state = WATCH_SPO2_DONE;
-		printf("WATCH spo2 stop early: %u%% (%lus)\r\n",
+		log_printf("WATCH spo2 stop early: %u%% (%lus)\r\n",
 			   (unsigned)p_spo2->value, (unsigned long)p_spo2->elapsed_s);
 	}
 	else
@@ -295,7 +297,7 @@ static void watch_spo2_btn_cb(lv_event_t *e)
 		p_spo2->elapsed_s = 0u;
 		p_spo2->hold_s = 0u;
 		p_spo2->value = 0u;
-		printf("WATCH spo2 start\r\n");
+		log_printf("WATCH spo2 start\r\n");
 	}
 
 	watch_spo2_render(p_spo2);
@@ -424,7 +426,7 @@ static void watch_spo2_create(page_base_t *p_page)
 	p_page->obj = scr;
 	watch_spo2_render(p_spo2);
 
-	printf("WATCH page create ->SPO2\r\n");
+	log_printf("WATCH page create ->SPO2\r\n");
 }
 
 /******************************************************************************
@@ -452,7 +454,7 @@ static void watch_spo2_destroy(page_base_t *p_page)
 	p_spo2->p_unit = NULL;
 	p_spo2->p_status = NULL;
 
-	printf("WATCH page destroy ->SPO2\r\n");
+	log_printf("WATCH page destroy ->SPO2\r\n");
 }
 
 /******************************************************************************

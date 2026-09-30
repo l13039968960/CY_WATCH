@@ -29,7 +29,7 @@
  *       lv_watch_page.h★★ 理由是**分层**, 不是洁癖: lv_watch_page.h 第 63 行就把
  *       lvgl.h 拖进来了, 而 APP 层的 handler 跑在 appcore 任务上下文里, **绝不能拿到
  *       lv_xxx() 的原型** —— LV_USE_OS = LV_OS_NONE 时 LVGL 无锁, 全工程只有 "lvgl"
- *       任务能碰对象树(见 service/Lvgl/cywatch_service_Lvgl.h 头注释的跨任务契约)。
+ *       任务能碰对象树(见 service/Lvgl/cywatch_service_lvgl.h 头注释的跨任务契约)。
  *       本头只暴露"值"和"设置值的函数", 一个 vendor 类型都不带, 从源头上让 APP 层
  *       想调 lv_xxx() 也调不到. 范本: system/Rtc/cywatch_rtc.h(同为"接口零依赖").
  *

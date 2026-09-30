@@ -6,6 +6,7 @@
  * @file lv_port_indev.c
  *
  * @par dependencies
+ * - cywatch_log.h
  * - lv_port_indev.h
  * - ../../CST816T/adapter/cywatch_adapter_cst816t.h
  *
@@ -37,6 +38,7 @@
  ******************************************************************************/
 #include "lv_port_indev.h"
 
+#include "system/log/cywatch_log.h" /* log_printf() */
 #include <stdio.h>
 #include "cywatch_adapter_indev.h"
 
@@ -156,7 +158,7 @@ int8_t lv_port_indev_init(void)
 	ret = lvgl_bsp_indev_inst();
 	if (0 != ret)
 	{
-		printf("TOUCH inst fail:%d\r\n", (int)ret);
+		log_printf("TOUCH inst fail:%d\r\n", (int)ret);
 		return -1;
 	}
 
@@ -164,7 +166,7 @@ int8_t lv_port_indev_init(void)
 	p_indev = lv_indev_create();
 	if (NULL == p_indev)
 	{
-		printf("TOUCH lv_indev_create fail\r\n");
+		log_printf("TOUCH lv_indev_create fail\r\n");
 		return -2;
 	}
 

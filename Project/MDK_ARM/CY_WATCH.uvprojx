@@ -340,7 +340,7 @@
               <MiscControls>-Wno-padded -Wno-sign-conversion -Wno-implicit-int-conversion -Wno-declaration-after-statement -Wno-newline-eof -Wno-cast-qual -Wno-extra-semi-stmt -Wno-switch-enum -Wno-cast-align -Wno-disabled-macro-expansion -Wno-missing-variable-declarations -Wno-unreachable-code-return -Wno-assign-enum -Wno-unused-parameter -Wno-missing-prototypes -Wno-missing-noreturn -Wno-covered-switch-default -Wno-unused-function -Wno-comma -Wno-bad-function-cast -Wno-unreachable-code-break -Wno-unreachable-code -Wno-shorten-64-to-32 -Wno-format-nonliteral -fno-short-enums</MiscControls>
               <Define>USE_HAL_DRIVER,STM32F411xE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\Lvgl_PageManger</IncludePath>
+              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -429,6 +429,11 @@
               <FileType>1</FileType>
               <FilePath>..\..\Core\system\rtstats\rtstats.c</FilePath>
             </File>
+            <File>
+              <FileName>cywatch_log.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\system\log\cywatch_log.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -468,6 +473,16 @@
               <FileName>iic_hal.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Core\IIC\iic_hal.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Core/ADC</GroupName>
+          <Files>
+            <File>
+              <FileName>adc_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\ADC\adc_hal.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -573,6 +588,16 @@
               <FileName>stm32f4xx_hal_rtc_ex.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_rtc_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_adc.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_adc.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_adc_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_adc_ex.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -2789,6 +2814,86 @@
               <FileType>1</FileType>
               <FilePath>..\..\BSP\CST816T\cywatch_bsp_cst816t_driver.c</FilePath>
             </File>
+            <File>
+              <FileName>cywatch_bsp_w25q64_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\W25Q64\cywatch_bsp_w25q64_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_bsp_adkey_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\ADKEY\cywatch_bsp_adkey_driver.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>FatFS/source</GroupName>
+          <Files>
+            <File>
+              <FileName>ff.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\MIddleWares\FatFS\ff16\source\ff.c</FilePath>
+            </File>
+            <File>
+              <FileName>ffunicode.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\MIddleWares\FatFS\ff16\source\ffunicode.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>FatFS/port</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_fatfs_diskio.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\MIddleWares\FatFS\port\cywatch_fatfs_diskio.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_fatfs_os.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\MIddleWares\FatFS\port\cywatch_fatfs_os.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/fatfs</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_fatfs.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\fatfs\cywatch_service_fatfs.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/fatfs/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_w25q64.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\fatfs\adapter\cywatch_adapter_w25q64.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/adkey</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_key.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\adkey\cywatch_service_key.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/adkey/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_adkey.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\adkey\adapter\cywatch_adapter_adkey.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -2830,9 +2935,9 @@
           <GroupName>Service/lvgl</GroupName>
           <Files>
             <File>
-              <FileName>cywatch_service_Lvgl.c</FileName>
+              <FileName>cywatch_service_lvgl.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\APP\Service\lvgl\cywatch_service_Lvgl.c</FilePath>
+              <FilePath>..\..\APP\Service\lvgl\cywatch_service_lvgl.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -2852,12 +2957,12 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>Service/lvgl/PageMgr</GroupName>
+          <GroupName>Service/lvgl/ui_manger</GroupName>
           <Files>
             <File>
               <FileName>PageMem.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\APP\Service\lvgl\Lvgl_PageManger\PageMem.c</FilePath>
+              <FilePath>..\..\APP\Service\lvgl\ui_manger\PageMem.c</FilePath>
             </File>
           </Files>
         </Group>
