@@ -1,7 +1,7 @@
 .vscode
 Script/Doc/*
 # 但文档本身要版本化, 上面那行会把 .md 一并挡掉
-!Script/Doc/*.md
+# !Script/Doc/*.md
 .claude
 
 # ---- Keil MDK-ARM 构建产物 ----

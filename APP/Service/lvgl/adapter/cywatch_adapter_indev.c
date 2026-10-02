@@ -315,6 +315,17 @@ static int8_t touch_iic_receive_bytes(uint8_t *pdata, uint8_t size)
 	return touch_iic_instance.pf_receive_bytes(&touch_iic_instance, pdata, size);
 }
 
+static int8_t touch_iic_readreg(uint8_t dev_addr, uint8_t reg,
+                                uint8_t *pdata, uint8_t size)
+{
+	return touch_iic_instance.pf_readreg(&touch_iic_instance, dev_addr, reg, pdata, size);
+}
+
+static int8_t touch_iic_writereg(uint8_t dev_addr, uint8_t reg, uint8_t data)
+{
+	return touch_iic_instance.pf_writereg(&touch_iic_instance, dev_addr, reg, data);
+}
+
 /******************************************************************************
  * @name    cst816t_iic_init
  * @brief   I2C总线初始化: 转发到 main.c 的 touch_iic_instance
@@ -448,6 +459,8 @@ int8_t lvgl_bsp_indev_inst(void)
 	cst816t_iic_interface_instance.pf_send_not_ack  = touch_iic_send_not_ack;
 	cst816t_iic_interface_instance.pf_send_bytes    = touch_iic_send_bytes;
 	cst816t_iic_interface_instance.pf_receive_bytes = touch_iic_receive_bytes;
+	cst816t_iic_interface_instance.pf_readreg       = touch_iic_readreg;
+	cst816t_iic_interface_instance.pf_writereg      = touch_iic_writereg;
 
 	/* 5. 挂GPIO(RST)接口 */
 	cst816t_gpio_interface_instance.pf_init            = lvgl_bsp_indev_gpio_init;

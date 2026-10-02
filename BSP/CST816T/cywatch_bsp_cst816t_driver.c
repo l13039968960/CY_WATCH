@@ -49,8 +49,6 @@
 #define CST816T_DEFAULT_NOR_SCAN_PER    1   /* 正常扫描周期 */
 #define CST816T_DEFAULT_AUTO_SLEEP_TIME 2   /* 自动休眠时间 */
 
-#define CST816T_I2C_ADDR_W (CST816T_I2C_ADDR << 1)
-#define CST816T_I2C_ADDR_R ((CST816T_I2C_ADDR << 1) | 0x01)
 
 static int8_t cst816t_deinst(struct bsp_cst816t_driver *p_cst816t_instance);
 static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance);
@@ -64,182 +62,6 @@ static int8_t cst816t_enable_interrupt(struct bsp_cst816t_driver *p_cst816t_inst
 static int8_t cst816t_disable_interrupt(struct bsp_cst816t_driver *p_cst816t_instance);
 static int8_t cst816t_hibernating(struct bsp_cst816t_driver *p_cst816t_instance);
 static int8_t cst816t_wakeup(struct bsp_cst816t_driver *p_cst816t_instance);
-
-/******************************************************************************
- * @name    cst816t_write_reg
- * @brief   向CST816T指定寄存器写入单字节数据
- * @param   p_cst816t_instance[in]
- * @param   reg[in] 寄存器地址
- * @param   data[in] 写入数据
- *
- * @return  0 success
- *         -1 cst816t_instance null
- *         -2 i2c write error
- *****************************************************************************/
-static int8_t cst816t_write_reg(struct bsp_cst816t_driver *p_cst816t_instance,
-								uint8_t reg, uint8_t data)
-{
-	cst816t_iic_interface_t *p_iic;
-	uint8_t buf[3];
-
-	if (NULL == p_cst816t_instance)
-	{
-		return -1;
-	}
-
-	p_iic = p_cst816t_instance->p_iic_interface;
-
-	/* 组装I2C帧: [DevAddr(W), RegAddr, Data] */
-	buf[0] = CST816T_I2C_ADDR_W;
-	buf[1] = reg;
-	buf[2] = data;
-
-	if (0 != p_iic->pf_start())
-	{
-		return -2;
-	}
-
-	if (0 != p_iic->pf_send_bytes(buf, 3))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	p_iic->pf_stop();
-
-	return 0;
-}
-
-/******************************************************************************
- * @name    cst816t_read_reg
- * @brief   从CST816T指定寄存器读取单字节数据
- * @param   p_cst816t_instance[in]
- * @param   reg[in] 寄存器地址
- * @param   p_data[out] 读取数据缓冲区
- *
- * @return  0 success
- *         -1 cst816t_instance null
- *         -2 i2c read error
- *****************************************************************************/
-static int8_t cst816t_read_reg(struct bsp_cst816t_driver *p_cst816t_instance,
-							   uint8_t reg, uint8_t *p_data)
-{
-	cst816t_iic_interface_t *p_iic;
-	uint8_t buf[2];
-
-	if (NULL == p_cst816t_instance)
-	{
-		return -1;
-	}
-
-	p_iic = p_cst816t_instance->p_iic_interface;
-
-	/* Phase 1: 写寄存器地址 [DevAddr(W), RegAddr] */
-	buf[0] = CST816T_I2C_ADDR_W;
-	buf[1] = reg;
-
-	if (0 != p_iic->pf_start())
-	{
-		return -2;
-	}
-
-	if (0 != p_iic->pf_send_bytes(buf, 2))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	/* Phase 2: 重复起始 + 读 [DevAddr(R)] → 接收数据 */
-	buf[0] = CST816T_I2C_ADDR_R;
-
-	if (0 != p_iic->pf_start())
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	if (0 != p_iic->pf_send_bytes(buf, 1))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	if (0 != p_iic->pf_receive_bytes(p_data, 1))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	p_iic->pf_stop();
-
-	return 0;
-}
-
-/******************************************************************************
- * @name    cst816t_read_multi_reg
- * @brief   从CST816T连续读取多字节数据(支持自动地址递增)
- * @param   p_cst816t_instance[in]
- * @param   reg[in] 起始寄存器地址
- * @param   p_data[out] 读取数据缓冲区
- * @param   size[in] 读取字节数
- *
- * @return  0 success
- *         -1 cst816t_instance null
- *         -2 i2c read error
- *****************************************************************************/
-static int8_t cst816t_read_multi_reg(struct bsp_cst816t_driver *p_cst816t_instance,
-									 uint8_t reg, uint8_t *p_data, uint8_t size)
-{
-	cst816t_iic_interface_t *p_iic;
-	uint8_t buf[2];
-
-	if (NULL == p_cst816t_instance)
-	{
-		return -1;
-	}
-
-	p_iic = p_cst816t_instance->p_iic_interface;
-
-	/* Phase 1: 写寄存器地址 [DevAddr(W), RegAddr] */
-	buf[0] = CST816T_I2C_ADDR_W;
-	buf[1] = reg;
-
-	if (0 != p_iic->pf_start())
-	{
-		return -2;
-	}
-
-	if (0 != p_iic->pf_send_bytes(buf, 2))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	/* Phase 2: 重复起始 + 读 [DevAddr(R)] → 接收多字节 */
-	buf[0] = CST816T_I2C_ADDR_R;
-
-	if (0 != p_iic->pf_start())
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	if (0 != p_iic->pf_send_bytes(buf, 1))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	if (0 != p_iic->pf_receive_bytes(p_data, size))
-	{
-		p_iic->pf_stop();
-		return -2;
-	}
-
-	p_iic->pf_stop();
-
-	return 0;
-}
 
 /******************************************************************************
  * @name    cst816t_irq_cb
@@ -553,7 +375,7 @@ static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance)
 	p_cst816t_instance->p_delay_interface->pf_delay(CST816T_STARTUP_DELAY_MS);
 
 	/* 2. 配置中断控制(使能触摸中断 + 手势中断) */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_IRQ_CTL,
 							CST816T_DEFAULT_IRQ_CTL);
 	if (0 != ret)
@@ -562,7 +384,7 @@ static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 3. 配置手势使能掩码 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_MOTION_MASK,
 							CST816T_DEFAULT_MOTION_MASK);
 	if (0 != ret)
@@ -571,7 +393,7 @@ static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 4. 配置长按时间门限 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_LONG_PRESS_TICK,
 							CST816T_DEFAULT_LONG_PRESS_TICK);
 	if (0 != ret)
@@ -580,7 +402,7 @@ static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 5. 配置正常扫描周期 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_NOR_SCAN_PER,
 							CST816T_DEFAULT_NOR_SCAN_PER);
 	if (0 != ret)
@@ -589,7 +411,7 @@ static int8_t cst816t_init(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 6. 配置自动休眠时间 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_AUTO_SLEEP_TIME,
 							CST816T_DEFAULT_AUTO_SLEEP_TIME);
 	if (0 != ret)
@@ -628,7 +450,7 @@ static int8_t cst816t_deinit(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 进入深度休眠, 关闭扫描以降低功耗 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_SLEEP_MODE,
 							CST816T_SLEEP_MODE_DEEP_SLEEP);
 	if (0 != ret)
@@ -671,7 +493,7 @@ static int8_t cst816t_read_id(struct bsp_cst816t_driver *p_cst816t_instance)
 		return -1;
 	}
 
-	if (0 != cst816t_read_reg(p_cst816t_instance, CST816T_CHIP_ID, &id))
+	if (0 != p_cst816t_instance->p_iic_interface->pf_readreg(CST816T_I2C_ADDR, CST816T_CHIP_ID, &id, 1))
 	{
 		return -2;
 	}
@@ -752,7 +574,7 @@ static int8_t cst816t_read_touch(struct bsp_cst816t_driver *p_cst816t_instance,
 	}
 
 	/* 读取触摸数据帧 */
-	if (0 != cst816t_read_multi_reg(p_cst816t_instance,
+	if (0 != p_cst816t_instance->p_iic_interface->pf_readreg(CST816T_I2C_ADDR,
 									CST816T_GESTURE_ID,
 									buf,
 									CST816T_TOUCH_DATA_SIZE))
@@ -806,7 +628,7 @@ static int8_t cst816t_enable_interrupt(struct bsp_cst816t_driver *p_cst816t_inst
 #endif // OS_SUPPORTING
 
 	/* 1. 使能器件内部触摸/手势中断源 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_IRQ_CTL,
 							CST816T_DEFAULT_IRQ_CTL);
 	if (0 != ret)
@@ -847,7 +669,7 @@ static int8_t cst816t_disable_interrupt(struct bsp_cst816t_driver *p_cst816t_ins
 	}
 
 	/* 1. 关闭器件内部触摸/手势中断源 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_IRQ_CTL,
 							0x00);
 	if (0 != ret)
@@ -894,7 +716,7 @@ static int8_t cst816t_hibernating(struct bsp_cst816t_driver *p_cst816t_instance)
 	}
 
 	/* 进入深度休眠 */
-	ret = cst816t_write_reg(p_cst816t_instance,
+	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_SLEEP_MODE,
 							CST816T_SLEEP_MODE_DEEP_SLEEP);
 	if (0 != ret)

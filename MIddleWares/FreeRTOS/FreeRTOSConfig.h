@@ -38,11 +38,14 @@
 /* 内存管理 ------------------------------------------------------------ */
 #define configSUPPORT_DYNAMIC_ALLOCATION        1 /* heap_4: pvPortMalloc 动态堆 */
 #define configSUPPORT_STATIC_ALLOCATION         0
-#define configTOTAL_HEAP_SIZE                   ( ( size_t ) ( 24 * 1024 ) )    /* 24 KB 内核堆 */
-/* @note 由 16KB 提到 24KB, 因为 FatFs 自检任务要 4096B 栈(栈上放 ff.c 的 LFN
-   工作缓冲 512B + FILINFO ~300B + printf 用量). 16KB 时剩余堆只有 ~5.6KB,
-   而 configCHECK_FOR_STACK_OVERFLOW == 0 意味着**栈溢出不会报错**, 只会踩坏
-   相邻堆块, 所以宁可多留余量. 多出来的 8KB 是 .bss(RW_IRAM1 有 116KB, 够) */
+#define configTOTAL_HEAP_SIZE                   ( ( size_t ) ( 32 * 1024 ) )    /* 32 KB 内核堆 */
+/* @note 由 16KB → 24KB(FatFs 自检任务要 4096B 栈) → 32KB: 再加姿态(2048)与心率
+   (2048)两个服务任务后, 24KB 时实测"起服务前余 3816B, 拉起姿态后只剩 1560B",
+   心率任务 2048B 建不起来 → osThreadNew 返回 NULL, 服务内自己的 for(;;) 空转,
+   还把同优先级的 rtstats 一起饿死. 32KB 后余量充足.
+   多出的 8KB 是 .bss: RW+ZI 共 ~104KB, 芯片 128KB, 仍余 ~24KB.
+   @warning configCHECK_FOR_STACK_OVERFLOW == 0: 栈溢出**不报错**, 只踩坏相邻
+   堆块 —— 所以这里宁可多留余量. 心跳堆余量看 rtstats(每 5s 一行) */
 #define configAPPLICATION_ALLOCATED_HEAP        0
 #define configQUEUE_REGISTRY_SIZE               8
 

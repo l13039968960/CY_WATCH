@@ -242,4 +242,20 @@ void EXTI2_IRQHandler(void)
   exti_irq_handler(GPIO_PIN_2);
 }
 
+/**
+  * @brief EXTI3 中断: MAX30102 INT(PA3, FIFO 满下降沿)
+  *
+  *        转发到 exti_hal 分发(按线号 3 反查实例) → main.c 的 max30102_exti_cb
+  *        → adapter heartrate_bsp_interrupt_cb() → 驱动 pf_interrupt_cb:
+  *        只释放信号量, 不做任何 I2C/printf(软件 I2C 不可重入).
+  *        FIFO 数据由心率服务任务醒来后用软件 I2C 读走.
+  *
+  * @note 优先级 6 >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY(5):
+  *       ISR 内会调 osSemaphoreRelease(FromISR 安全 API)
+  */
+void EXTI3_IRQHandler(void)
+{
+  exti_irq_handler(GPIO_PIN_3);
+}
+
 /* USER CODE END 1 */

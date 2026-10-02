@@ -52,6 +52,24 @@ static int8_t iic_receive_bytes(struct iic_driver *p_iic_instance,
 								uint8_t *pdata,
 								uint8_t size);
 
+/* 寄存器级读写 (器件地址/寄存器地址的组装都在本层完成) */
+static int8_t iic_readreg(struct iic_driver *p_iic_instance,
+						  uint8_t dev_addr, uint8_t reg,
+						  uint8_t *pdata, uint8_t size);
+static int8_t iic_writereg(struct iic_driver *p_iic_instance,
+						   uint8_t dev_addr, uint8_t reg,
+						   uint8_t data);
+
+/* 裸帧读写 (器件地址由本层拼) */
+static int8_t iic_write_frame(struct iic_driver *p_iic_instance,
+							  uint8_t dev_addr, uint8_t *pdata, uint8_t size);
+static int8_t iic_read_frame(struct iic_driver *p_iic_instance,
+							 uint8_t dev_addr, uint8_t *pdata, uint8_t size);
+
+/* 互斥量 (未注入 p_mutex_interface 时为空操作) */
+static int8_t iic_mutex_lock(iic_driver_t *p_iic_instance);
+static void iic_mutex_unlock(iic_driver_t *p_iic_instance);
+
 /********************************* 底层GPIO操作 *********************************/
 
 /******************************************************************************
@@ -373,6 +391,265 @@ static int8_t iic_receive_bytes(struct iic_driver *p_iic_instance,
 	return 0;
 }
 
+/******************************************************************************
+ * @name    iic_mutex_lock
+ * @brief   取总线锁
+ * @param   p_iic_instance[in]
+ * @return  0 success / -3 取锁失败
+ * @note    未注入互斥量接口时为空操作(单任务独占总线可省锁)
+ *****************************************************************************/
+static int8_t iic_mutex_lock(iic_driver_t *p_iic_instance)
+{
+	if (NULL == p_iic_instance->p_mutex_interface)
+	{
+		return 0;
+	}
+
+	return p_iic_instance->p_mutex_interface->pf_lock();
+}
+
+/******************************************************************************
+ * @name    iic_mutex_unlock
+ * @brief   放总线锁(空操作同上)
+ *****************************************************************************/
+static void iic_mutex_unlock(iic_driver_t *p_iic_instance)
+{
+	if (NULL == p_iic_instance->p_mutex_interface)
+	{
+		return;
+	}
+
+	(void)p_iic_instance->p_mutex_interface->pf_unlock();
+}
+
+/******************************************************************************
+ * @name    iic_readreg
+ * @brief   读寄存器: 写[DevAddr(W),Reg] → 重复START → 读[DevAddr(R)] → 收size字节
+ * @param   p_iic_instance[in]
+ * @param   dev_addr[in] 器件7位地址(内部自己拼读写位)
+ * @param   reg[in]      寄存器地址
+ * @param   pdata[out]   接收缓冲区
+ * @param   size[in]     接收字节数
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *         -2 i2c error
+ *         -3 取总线锁失败
+ *
+ * @note    整个事务(start..stop)持锁: 位带总线不可重入, 多任务共用时必须原子
+ *****************************************************************************/
+static int8_t iic_readreg(struct iic_driver *p_iic_instance,
+						  uint8_t dev_addr, uint8_t reg,
+						  uint8_t *pdata, uint8_t size)
+{
+	uint8_t buf[2];
+
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	if (0 != iic_mutex_lock(p_iic_instance))
+	{
+		return -3;
+	}
+
+	/* Phase 1: 写寄存器地址 [DevAddr(W), RegAddr] */
+	buf[0] = (uint8_t)(dev_addr << 1);
+	buf[1] = reg;
+
+	if (0 != iic_start(p_iic_instance))
+	{
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	if (0 != iic_send_bytes(p_iic_instance, buf, 2))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	/* Phase 2: 重复起始 + 读 [DevAddr(R)] → 接收数据 */
+	buf[0] = (uint8_t)((dev_addr << 1) | 0x01);
+
+	if (0 != iic_start(p_iic_instance))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	if (0 != iic_send_bytes(p_iic_instance, buf, 1))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	if (0 != iic_receive_bytes(p_iic_instance, pdata, size))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	iic_stop(p_iic_instance);
+	iic_mutex_unlock(p_iic_instance);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    iic_writereg
+ * @brief   写寄存器: [DevAddr(W),RegAddr,Data] → STOP
+ * @param   p_iic_instance[in]
+ * @param   dev_addr[in] 器件7位地址(内部自己拼写位)
+ * @param   reg[in]      寄存器地址
+ * @param   data[in]     写入数据
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *         -2 i2c error
+ *         -3 取总线锁失败
+ *
+ * @note    整个事务(start..stop)持锁, 理由同 iic_readreg
+ *****************************************************************************/
+static int8_t iic_writereg(struct iic_driver *p_iic_instance,
+						   uint8_t dev_addr, uint8_t reg,
+						   uint8_t data)
+{
+	uint8_t buf[3];
+
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	if (0 != iic_mutex_lock(p_iic_instance))
+	{
+		return -3;
+	}
+
+	/* 组装I2C帧: [DevAddr(W), RegAddr, Data] */
+	buf[0] = (uint8_t)(dev_addr << 1);
+	buf[1] = reg;
+	buf[2] = data;
+
+	if (0 != iic_start(p_iic_instance))
+	{
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	if (0 != iic_send_bytes(p_iic_instance, buf, 3))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	iic_stop(p_iic_instance);
+	iic_mutex_unlock(p_iic_instance);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    iic_write_frame
+ * @brief   写裸帧: START → [DevAddr(W), data...] → STOP
+ * @param   p_iic_instance[in]
+ * @param   dev_addr[in] 器件7位地址(内部自己拼写位)
+ * @param   pdata[in]    数据区(不含器件地址), size为0时不发送
+ * @param   size[in]     数据字节数
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *         -2 i2c error
+ *         -3 取总线锁失败
+ *
+ * @note    给命令是"无寄存器地址"裸帧的器件用(如 AHT21 的 AC 33 00)。
+ *          地址字节与数据分两次 send_bytes 发出, 线上波形与拼成一整段完全相同
+ *          (send_bytes 只是逐字节发送+等ACK), 故不需要额外缓冲区。
+ *****************************************************************************/
+static int8_t iic_write_frame(struct iic_driver *p_iic_instance,
+							  uint8_t dev_addr, uint8_t *pdata, uint8_t size)
+{
+	uint8_t addr_byte = (uint8_t)(dev_addr << 1);
+
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	if (0 != iic_mutex_lock(p_iic_instance))
+	{
+		return -3;
+	}
+
+	iic_start(p_iic_instance);
+
+	if (0 != iic_send_bytes(p_iic_instance, &addr_byte, 1) ||
+		0 != iic_send_bytes(p_iic_instance, pdata, size))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	iic_stop(p_iic_instance);
+	iic_mutex_unlock(p_iic_instance);
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    iic_read_frame
+ * @brief   读裸帧: START → [DevAddr(R)] → 收size字节 → STOP
+ * @param   p_iic_instance[in]
+ * @param   dev_addr[in] 器件7位地址(内部自己拼读位)
+ * @param   pdata[out]   接收缓冲区
+ * @param   size[in]     接收字节数
+ *
+ * @return  0 success
+ *         -1 p_iic_instance null
+ *         -2 i2c error
+ *         -3 取总线锁失败
+ *
+ * @note    给"读数没有寄存器地址阶段"的器件用(如 AHT21 触发后的 7 字节测量结果)
+ *****************************************************************************/
+static int8_t iic_read_frame(struct iic_driver *p_iic_instance,
+							 uint8_t dev_addr, uint8_t *pdata, uint8_t size)
+{
+	uint8_t addr_byte = (uint8_t)((dev_addr << 1) | 0x01);
+
+	if (NULL == p_iic_instance)
+	{
+		return -1;
+	}
+
+	if (0 != iic_mutex_lock(p_iic_instance))
+	{
+		return -3;
+	}
+
+	iic_start(p_iic_instance);
+
+	if (0 != iic_send_bytes(p_iic_instance, &addr_byte, 1) ||
+		0 != iic_receive_bytes(p_iic_instance, pdata, size))
+	{
+		iic_stop(p_iic_instance);
+		iic_mutex_unlock(p_iic_instance);
+		return -2;
+	}
+
+	iic_stop(p_iic_instance);
+	iic_mutex_unlock(p_iic_instance);
+
+	return 0;
+}
+
 /********************************* 构造与析构 *********************************/
 
 /******************************************************************************
@@ -487,6 +764,7 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
 	}
 
 	p_iic_instance->p_delay_interface = NULL;
+	p_iic_instance->p_mutex_interface = NULL;
 
 	p_iic_instance->init_state = 0;
 	p_iic_instance->ref_count = 0;
@@ -504,6 +782,10 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
 	p_iic_instance->pf_receive_byte = NULL;
 	p_iic_instance->pf_send_bytes = NULL;
 	p_iic_instance->pf_receive_bytes = NULL;
+	p_iic_instance->pf_readreg = NULL;
+	p_iic_instance->pf_writereg = NULL;
+	p_iic_instance->pf_write_frame = NULL;
+	p_iic_instance->pf_read_frame = NULL;
 
 	return 0;
 }
@@ -517,15 +799,18 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
  * @param   p_iic_instance[out]   I2C驱动实例
  * @param   p_bus[in]            GPIO总线配置
  * @param   p_delay_interface[in] 延时接口(软件I2C时序需微秒级延时)
+ * @param   p_mutex_interface[in] 互斥量接口(可传NULL=不加锁, 用于独占总线)
  *
  * @return  0 success
  *         -1 p_iic_instance null
  *         -2 p_bus null
  *         -3 delay interface null
+ *         -4 mutex interface 非空但回调缺失
  *****************************************************************************/
 int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 					   iic_bus_t *p_bus,
-					   iic_delay_interface_t *p_delay_interface)
+					   iic_delay_interface_t *p_delay_interface,
+					   iic_mutex_interface_t *p_mutex_interface)
 {
 	if (NULL == p_iic_instance)
 	{
@@ -542,8 +827,17 @@ int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 		return -3;
 	}
 
+	if (NULL != p_mutex_interface &&
+		(NULL == p_mutex_interface->pf_lock || NULL == p_mutex_interface->pf_unlock))
+	{
+		return -4;
+	}
+
 	/* 注入延时接口 */
 	p_iic_instance->p_delay_interface = p_delay_interface;
+
+	/* 注入互斥量接口 */
+	p_iic_instance->p_mutex_interface = p_mutex_interface;
 
 	/* 实例状态: 尚未初始化, 无使用者 */
 	p_iic_instance->init_state = 0;
@@ -569,6 +863,10 @@ int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 	p_iic_instance->pf_receive_byte = iic_receive_byte;
 	p_iic_instance->pf_send_bytes = iic_send_bytes;
 	p_iic_instance->pf_receive_bytes = iic_receive_bytes;
+	p_iic_instance->pf_readreg = iic_readreg;
+	p_iic_instance->pf_writereg = iic_writereg;
+	p_iic_instance->pf_write_frame = iic_write_frame;
+	p_iic_instance->pf_read_frame = iic_read_frame;
 
 	return 0;
 }

@@ -47,12 +47,20 @@ typedef struct
 	void (*pf_delay_us)(uint32_t us); /* 微秒延时 */
 } iic_delay_interface_t;
 
+/* 互斥量接口 */
+typedef struct
+{
+	int8_t (*pf_lock)(void);   /* 取锁, 0=成功 */
+	int8_t (*pf_unlock)(void); /* 放锁, 0=成功 */
+} iic_mutex_interface_t;
+
 /* I2C驱动对象 */
 typedef struct iic_driver
 {
 	iic_bus_t bus; /* 总线硬件配置 */
 
 	iic_delay_interface_t *p_delay_interface; /* 延时接口 */
+	iic_mutex_interface_t *p_mutex_interface; /* 互斥量接口, NULL=不加锁 */
 
 	uint8_t init_state; /* 初始化状态: 0=deinit, 1=init */
 	uint8_t ref_count;  /* 使用本外设的实例数量: 0→1 才真正初始化, 减到 0 才真正反初始化 */
@@ -60,7 +68,8 @@ typedef struct iic_driver
 	/* 构造与析构 */
 	int8_t (*pf_inst)(struct iic_driver *p_iic_instance,
 					  iic_bus_t *p_bus,
-					  iic_delay_interface_t *p_delay_interface);
+					  iic_delay_interface_t *p_delay_interface,
+					  iic_mutex_interface_t *p_mutex_interface);
 	int8_t (*pf_deinst)(struct iic_driver *p_iic_instance);
 
 	int8_t (*pf_init)(struct iic_driver *p_iic_instance);
@@ -84,12 +93,32 @@ typedef struct iic_driver
 							   uint8_t *pdata,
 							   uint8_t size);
 
+	/* 寄存器级读写: 内部完成 START/重复START/器件地址/寄存器地址/STOP.
+	   整个事务(start..stop)持互斥量, 故这两个接口可被多个任务并发调用 */
+	int8_t (*pf_readreg)(struct iic_driver *p_iic_instance,
+						 uint8_t dev_addr, uint8_t reg,
+						 uint8_t *pdata, uint8_t size);
+	int8_t (*pf_writereg)(struct iic_driver *p_iic_instance,
+						  uint8_t dev_addr, uint8_t reg,
+						  uint8_t data);
+
+	/* 裸帧读写: 器件地址由本层拼, 整段(start..stop)同样持互斥量.
+	   给"非寄存器协议"的器件用 —— 命令是多字节裸帧(如 AHT21 的 AC 33 00),
+	   或读数根本没有寄存器地址阶段。
+	   @note 设备驱动不要再自己用 pf_start/pf_send_bytes 拼帧: 那样绕过了互斥量,
+	         位带总线被抢占切开就会和其他设备互相踩。 */
+	int8_t (*pf_write_frame)(struct iic_driver *p_iic_instance,
+							 uint8_t dev_addr, uint8_t *pdata, uint8_t size);
+	int8_t (*pf_read_frame)(struct iic_driver *p_iic_instance,
+							uint8_t dev_addr, uint8_t *pdata, uint8_t size);
+
 } iic_driver_t;
 
 /* I2C驱动构造函数 */
 int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 					   iic_bus_t *p_bus,
-					   iic_delay_interface_t *p_delay_interface);
+					   iic_delay_interface_t *p_delay_interface,
+					   iic_mutex_interface_t *p_mutex_interface);
 
 /**********************************Declaring***********************************/
 

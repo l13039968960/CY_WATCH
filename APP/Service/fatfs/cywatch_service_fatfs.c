@@ -535,9 +535,20 @@ static int8_t fatfs_selftest(void)
     return 0;
 }
 
+/* ===== 一次性诊断开关 =====
+   1 = 本次上电先"整片擦除 + f_mkfs", 再走正常挂载 + 自检.
+   目的: 自检第 6 步发现根目录首 4096B(一个擦除块)是 0xFF 空白, 128 个幻影目录项
+   排在两个真实文件前面. 整片擦回全 0xFF 再格式化, 就能区分是"卷里残留的旧数据"
+   还是"f_mkfs 的根目录零填充真的漏了第一块". ★查完改回 0★
+   代价: 整片擦除典型 20s / 最大 100s, 期间不能断电
+   @note 结论(2026-10-02 板上验证): 置 1 跑过一次后幻影项全部消失, 根目录只剩 2 项.
+         说明 f_mkfs 的零填充是好的 —— 那 128 个幻影项是**旧卷**留在 flash 上的状态
+         (根目录头一个擦除块仍是空白 0xFF), 不是当前格式化路径的缺陷. */
+#define FATFS_BOOT_ERASE_CHIP_TEST  0
+
 /******************************************************************************
  * @name    service_fatfs_boot_task
- * @brief   一次性任务体: 挂载 + 自检, 然后退出
+ * @brief   一次性任务体: (诊断擦除 +) 挂载 + 自检, 然后退出
  * @param   p_arg[in] 未使用
  * @return  无(末尾 osThreadExit)
  *
@@ -549,6 +560,13 @@ static int8_t fatfs_selftest(void)
 static void service_fatfs_boot_task(void *p_arg)
 {
     (void)p_arg;
+
+#if (0 != FATFS_BOOT_ERASE_CHIP_TEST)
+    if (SERVICE_FATFS_OK != service_fatfs_format(1U))
+    {
+        log_printf("[FS] 诊断: 整片擦除 + f_mkfs 失败, 仍按原流程继续\r\n");
+    }
+#endif
 
     s_mounted = (0 == fatfs_mount()) ? 1U : 0U;
 

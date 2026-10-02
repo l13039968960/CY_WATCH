@@ -61,6 +61,11 @@ typedef struct
 							uint8_t size);
 	int8_t (*pf_receive_bytes)(uint8_t *pdata,
 							   uint8_t size);
+	/* 寄存器级读写: 内部完成 START/重复START/器件地址/寄存器地址/STOP.
+	   dev_addr 传器件 7 位地址, 读写位由实现自己拼 */
+	int8_t (*pf_readreg)(uint8_t dev_addr, uint8_t reg,
+						 uint8_t *pdata, uint8_t size);
+	int8_t (*pf_writereg)(uint8_t dev_addr, uint8_t reg, uint8_t data);
 } cst816t_iic_interface_t;
 
 /* 中断阻塞等待用接口 */

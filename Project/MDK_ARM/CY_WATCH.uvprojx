@@ -340,7 +340,7 @@
               <MiscControls>-Wno-padded -Wno-sign-conversion -Wno-implicit-int-conversion -Wno-declaration-after-statement -Wno-newline-eof -Wno-cast-qual -Wno-extra-semi-stmt -Wno-switch-enum -Wno-cast-align -Wno-disabled-macro-expansion -Wno-missing-variable-declarations -Wno-unreachable-code-return -Wno-assign-enum -Wno-unused-parameter -Wno-missing-prototypes -Wno-missing-noreturn -Wno-covered-switch-default -Wno-unused-function -Wno-comma -Wno-bad-function-cast -Wno-unreachable-code-break -Wno-unreachable-code -Wno-shorten-64-to-32 -Wno-format-nonliteral -fno-short-enums</MiscControls>
               <Define>USE_HAL_DRIVER,STM32F411xE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger</IncludePath>
+              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\BSP\Nordic;..\..\Core\UART;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\nordic;..\..\APP\Service\nordic\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger;..\..\BSP\MPU6050;..\..\BSP\MAX30102;..\..\BSP\AHT21;..\..\BSP\AT24C02;..\..\BSP\AT24C02\adapter;..\..\APP\Service\attitude;..\..\APP\Service\attitude\adapter;..\..\APP\Service\attitude\ServiceFunction;..\..\APP\Service\heartrate;..\..\APP\Service\humiture;..\..\APP\Service\humiture\adapter;..\..\APP\Service\heartrate\adapter;..\..\APP\Service\heartrate\ServiceFunction</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -483,6 +483,16 @@
               <FileName>adc_hal.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Core\ADC\adc_hal.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Core/UART</GroupName>
+          <Files>
+            <File>
+              <FileName>uart_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\UART\uart_hal.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -2824,6 +2834,31 @@
               <FileType>1</FileType>
               <FilePath>..\..\BSP\ADKEY\cywatch_bsp_adkey_driver.c</FilePath>
             </File>
+            <File>
+              <FileName>cywatch_bsp_nordic_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\Nordic\cywatch_bsp_nordic_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_bsp_mpu6050_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\MPU6050\cywatch_bsp_mpu6050_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_bsp_max30102_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\MAX30102\cywatch_bsp_max30102_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_bsp_aht21_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\AHT21\cywatch_bsp_aht21_driver.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_bsp_at24c02_driver.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\AT24C02\cywatch_bsp_at24c02_driver.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -2893,6 +2928,26 @@
               <FileName>cywatch_adapter_adkey.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\APP\Service\adkey\adapter\cywatch_adapter_adkey.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/nordic</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_nordicprotocol.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\nordic\cywatch_service_nordicprotocol.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/nordic/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_nordic.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\nordic\adapter\cywatch_adapter_nordic.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -2998,6 +3053,101 @@
               <FileName>lv_watch_page_ota.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\APP\Service\lvgl\ui\lv_watch_page_ota.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/attitude</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_AttitudeCalculation.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\attitude\cywatch_service_AttitudeCalculation.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/attitude/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_mpu6050.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\attitude\adapter\cywatch_adapter_mpu6050.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/attitude/ServiceFunction</GroupName>
+          <Files>
+            <File>
+              <FileName>AttitudeCalculation.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\attitude\ServiceFunction\AttitudeCalculation.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/heartrate</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_HeartRate.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\heartrate\cywatch_service_HeartRate.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/heartrate/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_max30102.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\heartrate\adapter\cywatch_adapter_max30102.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/heartrate/ServiceFunction</GroupName>
+          <Files>
+            <File>
+              <FileName>HeartRate.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\heartrate\ServiceFunction\HeartRate.c</FilePath>
+            </File>
+            <File>
+              <FileName>SpO2.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\heartrate\ServiceFunction\SpO2.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/humiture</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_humiture.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\humiture\cywatch_service_humiture.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/humiture/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_aht21.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\humiture\adapter\cywatch_adapter_aht21.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Bsp/AT24C02/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_at24c02.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\BSP\AT24C02\adapter\cywatch_adapter_at24c02.c</FilePath>
             </File>
           </Files>
         </Group>
