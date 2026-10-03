@@ -25,14 +25,12 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "exti_hal.h"
+#include "dma_hal.h"   /* DMA 中断统一转给 dma_hal 按流分发 */
 
 /* FreeRTOS 端口的真实 ISR(portable/GCC/ARM_CM4F/port.c), 头文件无声明, 在此补原型 */
 extern void vPortSVCHandler(void);
 extern void xPortPendSVHandler(void);
 extern void xPortSysTickHandler(void);
-
-/* SPI1 TX DMA 句柄(stm32f4xx_hal_msp.c 定义), DMA 中断要转给它 */
-extern DMA_HandleTypeDef hdma_spi1_tx;
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -221,13 +219,35 @@ void SysTick_Handler(void)
 /* USER CODE BEGIN 1 */
 
 /**
-  * @brief DMA2_Stream3 中断: SPI1 TX 完成
+  * @brief DMA2_Stream3 中断: SPI1(LCD) TX 完成
   *
-  *        转发给 HAL 的 DMA 处理, 最终调 HAL_SPI_TxCpltCallback 释放 LCD 信号量。
+  *        统一转给 dma_hal 按流反查句柄, 最终调 HAL_SPI_TxCpltCallback 释放 LCD 信号量。
   */
 void DMA2_Stream3_IRQHandler(void)
 {
-  HAL_DMA_IRQHandler(&hdma_spi1_tx);
+  dma_irq_handler(DMA2_Stream3);
+}
+
+/**
+  * @brief DMA1_Stream3 中断: SPI2(W25Q64) RX 完成
+  *
+  *        统一转给 dma_hal 按流反查句柄, 最终调 HAL_SPI_RxCpltCallback 释放 W25Q64 信号量。
+  */
+void DMA1_Stream3_IRQHandler(void)
+{
+  dma_irq_handler(DMA1_Stream3);
+}
+
+/**
+  * @brief DMA1_Stream4 中断: SPI2(W25Q64) TX 完成
+  *
+  *        出空字节用: 全双工主模式下 HAL 的接收走 TransmitReceive, 发送侧的完成
+  *        回调被置 NULL(不释放任何信号量), 但流本身仍要挂中断, 否则标志位不清、
+  *        DMA 报 TE/HT 错误后流会停死。
+  */
+void DMA1_Stream4_IRQHandler(void)
+{
+  dma_irq_handler(DMA1_Stream4);
 }
 
 /**

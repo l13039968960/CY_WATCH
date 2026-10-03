@@ -27,18 +27,19 @@
 
 /***********************************Includes***********************************/
 #include "stm32f4xx_hal.h"
+#include "gpio_hal.h"
 #include <stdint.h>
 
 /***********************************Includes***********************************/
 
 /**********************************Declaring***********************************/
-/* I2C总线硬件配置 */
+/* I2C总线硬件配置: 两条线各一份 gpio 配置(SDA/SCL 可能不同端口).
+   ★这里填的是初始态★: SDA 收发之间要切方向, 那次切换走运行时的 pf_set_mode,
+   不进 cfg(gpio 驱动的 set_mode 是临时状态, 不写回 cfg) */
 typedef struct
 {
-	GPIO_TypeDef *p_sda_port;
-	GPIO_TypeDef *p_scl_port;
-	uint16_t sda_pin;
-	uint16_t scl_pin;
+	gpio_cfg_t sda; /* SDA 引脚(初始态: 推挽输出+上拉) */
+	gpio_cfg_t scl; /* SCL 引脚(初始态: 推挽输出+上拉) */
 } iic_bus_t;
 
 /* 延时接口 */
@@ -57,7 +58,9 @@ typedef struct
 /* I2C驱动对象 */
 typedef struct iic_driver
 {
-	iic_bus_t bus; /* 总线硬件配置 */
+	/* SDA/SCL 两引脚各自的驱动实例(引脚时钟也在它们内部开) */
+	gpio_driver_t sda;
+	gpio_driver_t scl;
 
 	iic_delay_interface_t *p_delay_interface; /* 延时接口 */
 	iic_mutex_interface_t *p_mutex_interface; /* 互斥量接口, NULL=不加锁 */

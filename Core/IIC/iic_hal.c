@@ -79,13 +79,8 @@ static void iic_mutex_unlock(iic_driver_t *p_iic_instance);
  *****************************************************************************/
 static void iic_sda_input_mode(iic_driver_t *p_iic_instance)
 {
-	GPIO_InitTypeDef GPIO_InitStructure = {0};
-
-	GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
-	GPIO_InitStructure.Mode = GPIO_MODE_INPUT;
-	GPIO_InitStructure.Pull = GPIO_PULLUP;
-	GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
+	(void)p_iic_instance->sda.pf_set_mode(&p_iic_instance->sda,
+										  GPIO_MODE_INPUT, GPIO_PULLUP);
 }
 
 /******************************************************************************
@@ -95,13 +90,8 @@ static void iic_sda_input_mode(iic_driver_t *p_iic_instance)
  *****************************************************************************/
 static void iic_sda_output_mode(iic_driver_t *p_iic_instance)
 {
-	GPIO_InitTypeDef GPIO_InitStructure = {0};
-
-	GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
-	GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_OD;
-	GPIO_InitStructure.Pull = GPIO_NOPULL;
-	GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
+	(void)p_iic_instance->sda.pf_set_mode(&p_iic_instance->sda,
+										  GPIO_MODE_OUTPUT_OD, GPIO_NOPULL);
 }
 
 /******************************************************************************
@@ -112,14 +102,8 @@ static void iic_sda_output_mode(iic_driver_t *p_iic_instance)
  *****************************************************************************/
 static void iic_sda_output(iic_driver_t *p_iic_instance, uint16_t val)
 {
-	if (val)
-	{
-		p_iic_instance->bus.p_sda_port->BSRR |= p_iic_instance->bus.sda_pin;
-	}
-	else
-	{
-		p_iic_instance->bus.p_sda_port->BSRR = (uint32_t)p_iic_instance->bus.sda_pin << 16U;
-	}
+	(void)p_iic_instance->sda.pf_write(&p_iic_instance->sda,
+									   (0U != val) ? 1U : 0U);
 }
 
 /******************************************************************************
@@ -130,14 +114,8 @@ static void iic_sda_output(iic_driver_t *p_iic_instance, uint16_t val)
  *****************************************************************************/
 static void iic_scl_output(iic_driver_t *p_iic_instance, uint16_t val)
 {
-	if (val)
-	{
-		p_iic_instance->bus.p_scl_port->BSRR |= p_iic_instance->bus.scl_pin;
-	}
-	else
-	{
-		p_iic_instance->bus.p_scl_port->BSRR = (uint32_t)p_iic_instance->bus.scl_pin << 16U;
-	}
+	(void)p_iic_instance->scl.pf_write(&p_iic_instance->scl,
+									   (0U != val) ? 1U : 0U);
 }
 
 /******************************************************************************
@@ -148,15 +126,7 @@ static void iic_scl_output(iic_driver_t *p_iic_instance, uint16_t val)
  *****************************************************************************/
 static uint8_t iic_sda_input(iic_driver_t *p_iic_instance)
 {
-	if (HAL_GPIO_ReadPin(p_iic_instance->bus.p_sda_port,
-						 p_iic_instance->bus.sda_pin) == GPIO_PIN_SET)
-	{
-		return 1;
-	}
-	else
-	{
-		return 0;
-	}
+	return p_iic_instance->sda.pf_read(&p_iic_instance->sda);
 }
 
 /********************************* 总线信号 *********************************/
@@ -660,16 +630,14 @@ static int8_t iic_read_frame(struct iic_driver *p_iic_instance,
  * @return  0 success
  *         -1 p_iic_instance null
  *
- * @note    调用前对应GPIO端口的时钟必须已使能, 否则写MODER无效, 引脚停在复位
- *          默认态(BSRR也拉不动), I2C的START条件发不出来。
+ * @note    SDA/SCL 的端口时钟由 gpio_hal 在自己的 pf_init 里开; 端口没配好
+ *          (时钟没开/MODER 没写)就拉不动线, I2C 的 START 条件发不出来。
  *
  * @note    引用计数: ref_count 由 0→1 时才真正配置GPIO, 已有使用者时只累加计数
  *          (同一实例被重复init不会把总线重配一遍)。
  *****************************************************************************/
 static int8_t iic_init(iic_driver_t *p_iic_instance)
 {
-	GPIO_InitTypeDef GPIO_InitStructure = {0};
-
 	if (NULL == p_iic_instance)
 	{
 		return -1;
@@ -678,15 +646,9 @@ static int8_t iic_init(iic_driver_t *p_iic_instance)
 	/* 首个使用者才真正把SDA/SCL配到运行态 */
 	if (0 == p_iic_instance->ref_count)
 	{
-		/* 1. SDA/SCL均配为推挽输出 + 上拉 */
-		GPIO_InitStructure.Pin = p_iic_instance->bus.sda_pin;
-		GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_PP;
-		GPIO_InitStructure.Pull = GPIO_PULLUP;
-		GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-		HAL_GPIO_Init(p_iic_instance->bus.p_sda_port, &GPIO_InitStructure);
-
-		GPIO_InitStructure.Pin = p_iic_instance->bus.scl_pin;
-		HAL_GPIO_Init(p_iic_instance->bus.p_scl_port, &GPIO_InitStructure);
+		/* 1. SDA/SCL均配为推挽输出 + 上拉(cfg 里的初始态) */
+		(void)p_iic_instance->sda.pf_init(&p_iic_instance->sda);
+		(void)p_iic_instance->scl.pf_init(&p_iic_instance->scl);
 
 		/* 2. 总线初始状态: SDA/SCL均置高 */
 		iic_sda_output(p_iic_instance, 1);
@@ -708,8 +670,8 @@ static int8_t iic_init(iic_driver_t *p_iic_instance)
  * @return  0 success
  *         -1 p_iic_instance null
  *
- * @note    只DeInit引脚, 不动GPIO端口时钟: 本总线所在端口可能与其他外设共用
- *          (如LCD也挂在GPIOA上), 关时钟会连带打死它们。时钟归应用层管。
+ * @note    引脚收尾(DeInit → 模拟输入)在 gpio_hal 里, 端口时钟不动: 本总线所在
+ *          端口可能与其他外设共用(如LCD也挂在GPIOA上), 关时钟会连带打死它们。
  *
  * @note    引用计数: 每个使用者退出时减1, 减到0才真正释放引脚。
  *****************************************************************************/
@@ -729,8 +691,8 @@ static int8_t iic_deinit(iic_driver_t *p_iic_instance)
 	/* 最后一个使用者退出时才真正释放SDA/SCL引脚 */
 	if (0 == p_iic_instance->ref_count)
 	{
-		HAL_GPIO_DeInit(p_iic_instance->bus.p_sda_port, p_iic_instance->bus.sda_pin);
-		HAL_GPIO_DeInit(p_iic_instance->bus.p_scl_port, p_iic_instance->bus.scl_pin);
+		(void)p_iic_instance->sda.pf_deinit(&p_iic_instance->sda);
+		(void)p_iic_instance->scl.pf_deinit(&p_iic_instance->scl);
 
 		p_iic_instance->init_state = 0;
 	}
@@ -806,6 +768,7 @@ static int8_t iic_deinst(iic_driver_t *p_iic_instance)
  *         -2 p_bus null
  *         -3 delay interface null
  *         -4 mutex interface 非空但回调缺失
+ *         -5 SDA/SCL 引脚实例构造失败(端口空)
  *****************************************************************************/
 int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 					   iic_bus_t *p_bus,
@@ -843,11 +806,12 @@ int8_t iic_driver_inst(iic_driver_t *p_iic_instance,
 	p_iic_instance->init_state = 0;
 	p_iic_instance->ref_count = 0;
 
-	/* 加载总线配置 */
-	p_iic_instance->bus.p_sda_port = p_bus->p_sda_port;
-	p_iic_instance->bus.p_scl_port = p_bus->p_scl_port;
-	p_iic_instance->bus.sda_pin = p_bus->sda_pin;
-	p_iic_instance->bus.scl_pin = p_bus->scl_pin;
+	/* 装配两条线的引脚实例(不碰硬件, 端口时钟与配置都在 pf_init 时做) */
+	if ((0 != gpio_driver_inst(&p_iic_instance->sda, &p_bus->sda)) ||
+		(0 != gpio_driver_inst(&p_iic_instance->scl, &p_bus->scl)))
+	{
+		return -5;
+	}
 
 	/* 挂载函数指针 */
 	p_iic_instance->pf_inst = iic_driver_inst;

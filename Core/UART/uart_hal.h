@@ -27,6 +27,7 @@
 
 /***********************************Includes***********************************/
 #include "stm32f4xx_hal.h"
+#include "gpio_hal.h"
 #include <stdint.h>
 /***********************************Includes***********************************/
 
@@ -45,6 +46,10 @@ typedef struct
 	UART_InitTypeDef init;        /* UART初始化参数(波特率/数据位/校验/停止位等) */
 	DMA_HandleTypeDef *p_hdma_tx; /* TX DMA句柄(须NORMAL模式, 环发送用) */
 	DMA_HandleTypeDef *p_hdma_rx; /* RX DMA句柄(须CIRCULAR模式, IDLE接收用) */
+
+	/* TX/RX 的引脚配置(复用推挽). 本层**不用 ST 的 MSP 回调**,
+	   时钟与引脚都交给 gpio_hal */
+	gpio_cfg_t gpio;
 } uart_cfg_t;
 
 typedef struct
@@ -65,7 +70,8 @@ typedef struct uart_driver
 	/* 第一个成员: 内嵌UART句柄(按值), 用于在HAL回调中container_of反查本实例 */
 	UART_HandleTypeDef huart;
 
-	uart_cfg_t cfg; /* 硬件配置 */
+	gpio_driver_t gpio; /* TX/RX 引脚驱动实例 */
+	uart_cfg_t cfg;     /* 硬件配置 */
 
 	/* 环形缓冲(由HAL层持有维护, 大小见UART_*_SIZE宏; 实例须为全局变量) */
 	uint8_t tx_ring_buf[UART_TX_RING_SIZE];   /* 发送环形缓冲 */
@@ -111,10 +117,9 @@ typedef struct uart_driver
 	int8_t   (*pf_wait_txcplt)(struct uart_driver *p_uart_instance, uint32_t timeout_ms); /* 等TX整批发完(flush) */
 	int8_t   (*pf_wait_rxcplt)(struct uart_driver *p_uart_instance, uint32_t timeout_ms); /* 等RX新数据入环 */
 
-	/* 中断入口(应用ISR调用) */
+	/* 中断入口(应用ISR调用).
+	   DMA 两条流的中断走 dma_hal 的 dma_irq_handler, 不在这里 */
 	void (*pf_irq_handler)(struct uart_driver *p_uart_instance);        /* USARTx_IRQHandler: IDLE/TC等 */
-	void (*pf_dma_tx_irq_handler)(struct uart_driver *p_uart_instance); /* DMA TX流IRQ */
-	void (*pf_dma_rx_irq_handler)(struct uart_driver *p_uart_instance); /* DMA RX流IRQ */
 } uart_driver_t;
 
 /* UART驱动构造函数 */

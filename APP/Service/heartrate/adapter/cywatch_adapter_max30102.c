@@ -23,6 +23,31 @@ static max30102_delay_interface_t     max30102_delay_instance;
 static max30102_timebase_interface_t  max30102_timebase_instance;
 static max30102_interrupt_interface_t max30102_interrupt_instance;
 
+/* 共享总线(PB6/PB7)的占用标记. iic_hal 按 ref_count 门控 —— 计数归零才真的
+   释放 SDA/SCL 引脚, 所以 MPU6050/MAX30102/AHT21 三个设备必须各占各放.
+   @note 标记不是冗余: 服务的 EVT_INIT 是重试循环(最多调 5 次 inst), 没有它每
+         失败一次就多抬一分, 而休眠/析构只放一次 —— 计数只增不减, 总线永远
+         回不到 0 */
+static uint8_t s_iic_claimed = 0U;
+
+static void iic_claim(void)
+{
+    if (0U == s_iic_claimed)
+    {
+        (void)iic_instance.pf_init(&iic_instance);
+        s_iic_claimed = 1U;
+    }
+}
+
+static void iic_release(void)
+{
+    if (0U != s_iic_claimed)
+    {
+        (void)iic_instance.pf_deinit(&iic_instance);
+        s_iic_claimed = 0U;
+    }
+}
+
 static void yield(void)
 {
 
@@ -130,6 +155,9 @@ static void max30102_int_disable(void)
 
 int8_t heartrate_bsp_inst(void)
 {
+    /* 先占住共享总线: 下面的 max30102_inst 里就有 I2C 读写(PART_ID) */
+    iic_claim();
+
     /* 信号量由本层持有: 仅首次创建, 服务重试 inst 时复用(不重复 new) */
     if (NULL == max30102_sem_instance)
     {
@@ -173,7 +201,14 @@ int8_t heartrate_bsp_inst(void)
 
 int8_t heartrate_bsp_deinst(void)
 {
-    return max30102_instance.pf_deinst(&max30102_instance);
+    int8_t ret;
+
+    ret = max30102_instance.pf_deinst(&max30102_instance);
+
+    /* 析构完再放总线: pf_deinst 里还要经 I2C 把器件关断 */
+    iic_release();
+
+    return ret;
 }
 
 int8_t heartrate_bsp_read_id(void)
@@ -218,12 +253,26 @@ int8_t heartrate_bsp_wait_interrupt(void)
 
 int8_t heartrate_bsp_hibernating(void)
 {
-    return max30102_instance.pf_hibernating(&max30102_instance);
+    int8_t ret;
+
+    ret = max30102_instance.pf_hibernating(&max30102_instance);
+
+    /* 器件已睡, 本设备退出共享总线(计数减一, 归零才真的放引脚) */
+    iic_release();
+
+    return ret;
 }
 
 int8_t heartrate_bsp_wakeup(void)
 {
-    return max30102_instance.pf_wakeup(&max30102_instance);
+    int8_t ret;
+
+    /* 先占回总线再唤醒: pf_wakeup 里要经 I2C 写器件 */
+    iic_claim();
+
+    ret = max30102_instance.pf_wakeup(&max30102_instance);
+
+    return ret;
 }
 
 /* ISR 上下文: 仅转驱动 pf_interrupt_cb(释放信号量/置标志), 不做 I2C/printf.

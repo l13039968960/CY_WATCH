@@ -1,0 +1,129 @@
+[RTC] init ok(LSE 起振正常, 表盘页有真实日期/时钟)
+[PWM] init ok(TIM4_CH3/CH4 @ PB8/PB9, 1000Hz, CH3/CH4 = 50%)
+[LVGL] service init ok("lvgl" 任务已建; lv_init/显示/触摸/UI 在任务体内做)
+[LVGL] 预期: 屏幕亮起并显示表盘页, 可左右/下滑切页
+[FATFS] service init ok("fatfs" 任务已建; 挂载/自检在任务体内做)
+[KEY] service init ok("key" 任务已建; ADKEY 构造/轮询在任务体内做)
+[NORDIC] service init ok("nordic_rx"/"nordic_tx" 任务已建)
+[ATTITUDE] service init ok("attitude" 任务已建; MPU6050 构造在任务体内做)
+[HEARTRATE] service init ok("heartrate" 任务已建; MAX30102 构造在任务体内做)
+[HUMITURE] service init ok("humiture" 任务已建; AHT21 构造在任务体内做)
+[FLAGS] service init ok("flags" 任务已建; AT24C02 构造在任务体内做)
+[KEY] 初始化完成, 每 100 ms 轮询一次(串口 115200)
+[FS] 挂载成功
+
+===== FatFs 自检开始(介质: W25Q64 8MB @SPI2, 扇区 512B, 擦除块 4096B) =====
+WATCH page create ->HOME
+[FS] 1. 写文件        PASS: selftest.txt, 9216 B
+[FS] 2. 读回校验      PASS: 9216 B 逐字节一致
+[FS] 3. f_stat        PASS: size=9216 属性=0x20 时间=5A21/0324
+[FS] 4. f_getfree     PASS: 总 8140 KB / 空闲 8104 KB (卷型=FAT12, 簇=2035 个 x 4096 B, 扇区=512 B)
+[FS] 5. 中文长文件名  PASS: 目录测试.txt
+[FS] 6. 根目录列表:
+        selftest.txt                 9216 B  attr=0x20
+        目录测试.txt             9216 B  attr=0x20
+[FS] 7. 栈余量        2460 B / 4608 B (全流程高水位)
+[FS] ===== 自检结束: 文件系统 PASS | 中文长文件名 PASS =====
+
+
+===== FreeRTOS runtime stats =====
+Heap: free 14264 B, min-ever-free 8496 B
+Task		State	Prio	Stack	Num
+rtstats        	X	8	183	10
+IDLE           	R	0	109	11
+lvgl           	B	24	206	1
+key            	B	8	181	3
+heartrate      	B	24	159	7
+humiture       	B	24	197	8
+attitude       	B	24	157	6
+nordic_tx      	B	24	449	5
+Tmr Svc        	B	2	231	12
+nordic_rx      	B	32	707	4
+Task		Abs Time	% Time
+rtstats        	386		<1%
+IDLE           	37531		74%
+attitude       	4456		8%
+key            	73		<1%
+heartrate      	36		<1%
+humiture       	13		<1%
+lvgl           	5005		9%
+Tmr Svc        	0		<1%
+nordic_rx      	0		<1%
+nordic_tx      	0		<1%
+
+===== FreeRTOS runtime stats =====
+Heap: free 14264 B, min-ever-free 8496 B
+Task		State	Prio	Stack	Num
+rtstats        	X	8	183	10
+IDLE           	R	0	109	11
+heartrate      	B	24	159	7
+attitude       	B	24	157	6
+key            	B	8	181	3
+humiture       	B	24	197	8
+lvgl           	B	24	206	1
+nordic_rx      	B	32	707	4
+nordic_tx      	B	24	449	5
+Tmr Svc        	B	2	231	12
+Task		Abs Time	% Time
+rtstats        	1066		1%
+IDLE           	78498		77%
+lvgl           	9487		9%
+key            	85		<1%
+humiture       	13		<1%
+heartrate      	36		<1%
+attitude       	9118		9%
+nordic_tx      	0		<1%
+Tmr Svc        	0		<1%
+nordic_rx      	0		<1%
+WATCH tick=10
+
+===== FreeRTOS runtime stats =====
+Heap: free 14264 B, min-ever-free 8496 B
+Task		State	Prio	Stack	Num
+rtstats        	X	8	183	10
+IDLE           	R	0	109	11
+lvgl           	B	24	206	1
+heartrate      	B	24	159	7
+key            	B	8	181	3
+humiture       	B	24	189	8
+attitude       	B	24	153	6
+Tmr Svc        	B	2	231	12
+nordic_rx      	B	32	707	4
+nordic_tx      	B	24	449	5
+Task		Abs Time	% Time
+rtstats        	1696		1%
+IDLE           	119471		78%
+lvgl           	13985		9%
+key            	94		<1%
+heartrate      	70		<1%
+humiture       	19		<1%
+attitude       	13755		9%
+nordic_rx      	0		<1%
+nordic_tx      	0		<1%
+Tmr Svc        	0		<1%
+
+===== FreeRTOS runtime stats =====
+Heap: free 14264 B, min-ever-free 8496 B
+Task		State	Prio	Stack	Num
+rtstats        	X	8	175	10
+IDLE           	R	0	109	11
+lvgl           	B	24	206	1
+humiture       	B	24	189	8
+key            	B	8	181	3
+heartrate      	B	24	159	7
+attitude       	B	24	153	6
+nordic_tx      	B	24	449	5
+Tmr Svc        	B	2	231	12
+nordic_rx      	B	32	707	4
+Task		Abs Time	% Time
+rtstats        	2388		1%
+IDLE           	160403		79%
+lvgl           	18583		9%
+humiture       	21		<1%
+key            	101		<1%
+heartrate      	70		<1%
+attitude       	18404		9%
+Tmr Svc        	0		<1%
+nordic_rx      	0		<1%
+nordic_tx      	0		<1%
+WATCH tick=20

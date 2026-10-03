@@ -27,6 +27,7 @@
 
 /***********************************Includes***********************************/
 #include "stm32f4xx_hal.h"
+#include "gpio_hal.h"
 #include <stdint.h>
 
 /***********************************Includes***********************************/
@@ -53,6 +54,10 @@ typedef struct
 	uint32_t channel;             /* 规则组通道(ADC_CHANNEL_x) */
 	uint32_t sampling_time;       /* 采样时间(ADC_SAMPLETIME_xCycles_x) */
 
+	/* 通道所在 GPIO 的引脚配置(模拟输入, mode 填 GPIO_MODE_ANALOG).
+	   本层**不用 ST 的 MSP 回调**, 时钟与引脚都交给 gpio_hal */
+	gpio_cfg_t gpio;
+
 	/* @note 单通道时 init.ScanConvMode 必须 DISABLE、init.NbrOfConversion 必须 1,
 	 *       本层会按此设定规则组的 Rank = 1.
 	 * @note 采样时间要配足: 信号源阻抗越高需要越长. 分压电阻一类的场合用
@@ -66,7 +71,8 @@ typedef struct adc_driver
 	/* 第一个成员: 内嵌ADC句柄(按值). 与 spi_driver_t 保持同样的布局, 但轮询
 	 * 模式没有中断回调, 因此不依赖 container_of 反查本实例 */
 	ADC_HandleTypeDef hadc;
-	adc_cfg_t cfg; /* 硬件配置 */
+	gpio_driver_t gpio; /* 通道引脚驱动实例 */
+	adc_cfg_t cfg;      /* 硬件配置 */
 
 	uint8_t init_state; /* 初始化状态: 0=deinit, 1=init */
 	uint8_t ref_count;  /* 使用本外设的实例数量: 0→1 才真正初始化, 减到 0 才真正反初始化 */

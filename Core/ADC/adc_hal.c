@@ -29,6 +29,35 @@ static int8_t adc_init(adc_driver_t *p_adc_instance);
 static int8_t adc_deinit(adc_driver_t *p_adc_instance);
 static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value);
 
+/********************************* 私有辅助 *********************************/
+
+/******************************************************************************
+ * @name    adc_clk_enable
+ * @brief   开本 ADC 外设的时钟(引脚时钟由 gpio_hal 负责)
+ * @param   p_adc[in]   ADC外设基地址
+ *
+ * @note    只能按基地址分派: RCC 的时钟使能宏连寄存器位都是编译期固定的
+ *          (__HAL_RCC_ADC1_CLK_ENABLE 直接写 APB2ENR 的 ADC1EN), HAL 没有
+ *          "按基地址查位" 的通用 API.
+ *****************************************************************************/
+static void adc_clk_enable(ADC_TypeDef *p_adc)
+{
+	if (ADC1 == p_adc) { __HAL_RCC_ADC1_CLK_ENABLE(); }
+}
+
+/******************************************************************************
+ * @name    adc_clk_disable
+ * @brief   关本 ADC 的时钟(pf_deinit 收尾用)
+ * @param   p_adc[in] ADC外设基地址
+ *
+ * @note    ★只关 ADC 外设时钟, 不关 GPIO 端口时钟★ —— 端口上还有 UART/EXTI/IIC
+ *          共用, 连端口时钟一起关会把它们一起打死.
+ *****************************************************************************/
+static void adc_clk_disable(ADC_TypeDef *p_adc)
+{
+	if (ADC1 == p_adc) { __HAL_RCC_ADC1_CLK_DISABLE(); }
+}
+
 /********************************* 构造与析构 *********************************/
 
 /******************************************************************************
@@ -41,8 +70,8 @@ static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value);
  *         -2 HAL_ADC_Init error
  *         -3 通道配置失败
  *
- * @note    ADC1时钟与引脚(模拟模式)都在 HAL_ADC_MspInit 里配置, 由 HAL_ADC_Init
- *          内部回调完成, 本函数不用重复开时钟.
+ * @note    ADC 的时钟与引脚都在本函数里配, 不走 ST 的 MSP 回调
+ *          (HAL_ADC_MspInit 未实现, HAL 自带的那个空弱函数不会动 GPIO).
  *
  * @note    引用计数: ref_count 由 0→1 时才真正初始化外设, 已有使用者时只累加计数
  *          (同一实例被重复init不会把外设重配一遍)。
@@ -56,9 +85,15 @@ static int8_t adc_init(adc_driver_t *p_adc_instance)
 		return -1;
 	}
 
-	/* 首个使用者才真正初始化ADC外设(MspInit里配引脚/时钟) */
+	/* 首个使用者才真正初始化ADC外设 */
 	if (0 == p_adc_instance->ref_count)
 	{
+		/* 时钟与引脚都在这里配: 后面 HAL_ADC_Init 内部那次 HAL_ADC_MspInit
+		   是空弱函数, 不会再动 GPIO —— 所以这一步不能省, 也不能挪到后面 */
+		adc_clk_enable(p_adc_instance->cfg.p_adc_base);
+
+		(void)p_adc_instance->gpio.pf_init(&p_adc_instance->gpio);
+
 		if (HAL_OK != HAL_ADC_Init(&p_adc_instance->hadc))
 		{
 			return -2;
@@ -90,8 +125,10 @@ static int8_t adc_init(adc_driver_t *p_adc_instance)
  * @return  0 success
  *         -1 adc_instance null
  *
- * @note    HAL_ADC_DeInit 会回调 HAL_ADC_MspDeInit: 关ADC1时钟、DeInit引脚。
- *
+ * @note    HAL_ADC_DeInit 回调的 MspDeInit 是空弱函数, 引脚与时钟由本函数自己收尾.
+ * @note    本函数有**低功耗语义**: 引脚不能只 DeInit 到复位态 ——
+ *          F4 的 GPIO 复位值是**浮空输入**(不是模拟), 施密特触发器还开着, 悬空脚
+ *          会随噪声来回翻转、白耗电。要再配成模拟输入才算真的关掉输入缓冲。
  * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设。
  *****************************************************************************/
 static int8_t adc_deinit(adc_driver_t *p_adc_instance)
@@ -111,6 +148,12 @@ static int8_t adc_deinit(adc_driver_t *p_adc_instance)
 	if (0 == p_adc_instance->ref_count)
 	{
 		HAL_ADC_DeInit(&p_adc_instance->hadc);
+
+		/* 引脚收尾(DeInit → 模拟输入, 顺序在 gpio_hal 里) */
+		(void)p_adc_instance->gpio.pf_deinit(&p_adc_instance->gpio);
+
+		/* ★只关 ADC 时钟★: 端口上还有 UART/EXTI/IIC 共用, 端口时钟不能关 */
+		adc_clk_disable(p_adc_instance->cfg.p_adc_base);
 
 		p_adc_instance->init_state = 0;
 	}
@@ -224,6 +267,7 @@ static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value)
  *         -1 adc_instance null
  *         -2 cfg null
  *         -3 adc base null
+ *         -4 gpio 实例构造失败
  *****************************************************************************/
 int8_t adc_driver_inst(adc_driver_t *p_adc_instance,
 					   adc_cfg_t *p_cfg)
@@ -241,6 +285,11 @@ int8_t adc_driver_inst(adc_driver_t *p_adc_instance,
 	if (NULL == p_cfg->p_adc_base)
 	{
 		return -3;
+	}
+
+	if (0 != gpio_driver_inst(&p_adc_instance->gpio, &p_cfg->gpio))
+	{
+		return -4;
 	}
 
 	/* 加载硬件配置 */

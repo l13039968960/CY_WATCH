@@ -27,6 +27,7 @@
 
 /***********************************Includes***********************************/
 #include "stm32f4xx_hal.h"
+#include "gpio_hal.h"
 #include <stdint.h>
 
 /***********************************Includes***********************************/
@@ -35,10 +36,10 @@
 /* EXTI外部中断硬件配置 */
 typedef struct
 {
-	GPIO_TypeDef *p_port;      /* GPIO端口 */
-	uint16_t pin;              /* 引脚号(GPIO_PIN_x, 同时决定EXTI线号0-15) */
-	uint32_t mode;             /* 触发模式(GPIO_MODE_IT_FALLING/RISING/RISING_FALLING) */
-	uint32_t pull;             /* 上下拉 */
+	/* 引脚配置. gpio.pins 必须是**单个位**(它同时决定 EXTI 线号 0-15),
+	   gpio.mode 填触发模式(GPIO_MODE_IT_FALLING/RISING/RISING_FALLING) */
+	gpio_cfg_t gpio;
+
 	IRQn_Type irqn;            /* NVIC中断号(如EXTI3_IRQn) */
 	uint32_t preempt_priority; /* 抢占优先级 */
 	uint32_t sub_priority;     /* 子优先级 */
@@ -53,17 +54,23 @@ typedef struct
 /* EXTI驱动对象 */
 typedef struct exti_driver
 {
-	exti_cfg_t cfg; /* 硬件配置 */
+	exti_cfg_t cfg;     /* 硬件配置 */
+	gpio_driver_t gpio; /* 中断引脚驱动实例(端口时钟也在它内部开) */
 
 	exti_delay_interface_t *p_delay_interface; /* 延时接口(由调用方注入) */
 
 	void (*pf_interrupt_cb)(void *p_ctx); /* 上层中断回调(ISR中调用, 仅置标志) */
 
-	/* 构造与析构 */
+	/* 构造: 存配置 + 挂函数指针(不碰硬件); 析构: 清接口与指针 */
 	int8_t (*pf_inst)(struct exti_driver *p_exti_instance,
 					  exti_cfg_t *p_cfg,
 					  exti_delay_interface_t *p_delay_interface);
 	int8_t (*pf_deinst)(struct exti_driver *p_exti_instance);
+
+	/* 占用: 配引脚为中断模式 + 注册分发表;
+	   释放: 关NVIC + 反注册 + 反初始化引脚(DeInit → 模拟输入) */
+	int8_t (*pf_init)(struct exti_driver *p_exti_instance);
+	int8_t (*pf_deinit)(struct exti_driver *p_exti_instance);
 
 	/* 底层EXTI操作 (void *匹配上层接口) */
 	int8_t (*pf_enable_interrupt)(void *p_exti_instance);

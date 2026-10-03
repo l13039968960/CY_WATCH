@@ -25,6 +25,9 @@
  * EVT_HW_INDEV_INIT: lv_port_indev_init()(CST816T adapter), 失败重试 5 次
  *                   → 成功后载入手表UI(lv_watch_ui_init)
  * EVT_RUN         : lv_timer_handler() + osDelay(5ms)
+ * EVT_SLEEP       : ST7789 SLPIN + CST816T 深度休眠(两者同进同出) → EVT_SLEEPING
+ * EVT_SLEEPING    : 空转, 等 service_lvgl_wakeup()
+ * EVT_WAKE        : 重开显示/触摸外设 + 整屏重绘 → EVT_RUN(不回 EVT_INIT)
  * EVT_ERROR       : 打印一次后空转(不自动恢复, 见下)
  *
  * @version V1.0
@@ -57,6 +60,8 @@
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
 #include "lv_watch_ui.h"
+#include "cywatch_adapter_disp.h"  /* lvgl_bsp_disp_sleep/wakeup */
+#include "cywatch_adapter_indev.h" /* lvgl_bsp_indev_hibernating/wakeup */
 #include "cmsis_os2.h"
 
 /***********************************Defines************************************/
@@ -83,6 +88,8 @@
 #define SERVICE_LVGL_RETRY_DELAY_MS     (500u)
 /* 错误态空转节拍 */
 #define SERVICE_LVGL_ERROR_TICK         (1000u)
+/* 睡眠态空转节拍(等 service_lvgl_wakeup 改状态) */
+#define SERVICE_LVGL_SLEEP_TICK         (100u)
 /***********************************Defines************************************/
 
 /**********************************Declaring***********************************/
@@ -93,6 +100,9 @@ typedef enum State_Lvgl_Service
 	EVT_HW_DISP_INIT, /* 显示初始化(可重试) */
 	EVT_HW_INDEV_INIT,/* 触摸初始化(可重试) + 载入UI */
 	EVT_RUN,          /* UI 泵循环 */
+	EVT_SLEEP,        /* 显示+触摸一起睡, 停 UI 泵 */
+	EVT_SLEEPING,     /* 睡眠空转, 等 service_lvgl_wakeup() */
+	EVT_WAKE,         /* 重开外设 + 强制整屏重绘 */
 	EVT_ERROR,        /* 初始化失败, 空转 */
 } State_Lvgl_Service_t;
 
@@ -211,6 +221,30 @@ static void service_lvgl_run(void *pvParameters)
 			osDelay(SERVICE_LVGL_LOOP_TICK);
 			break;
 
+		case EVT_SLEEP:
+			/* 显示与触摸一起睡. 必须同进同出: 屏一 SLPIN, flush_cb 就不能再往
+			   SPI 写, 只睡显示屏而让 UI 泵继续跑会往已入睡的面板灌数据 */
+			(void)lvgl_bsp_disp_sleep();
+			(void)lvgl_bsp_indev_hibernating();
+			ServiceState = EVT_SLEEPING;
+			break;
+
+		case EVT_SLEEPING:
+			/* 停在这里等 service_lvgl_wakeup(); 唤醒走 EVT_WAKE, 绝不回
+			   EVT_INIT —— lv_init 不可重入(见文件头 @note) */
+			osDelay(SERVICE_LVGL_SLEEP_TICK);
+			break;
+
+		case EVT_WAKE:
+			/* 触摸先起(RST 在触摸自己的 I2C 上, 与屏无关), 再开显示 */
+			(void)lvgl_bsp_indev_wakeup();
+			(void)lvgl_bsp_disp_wakeup();
+			/* ★整屏重绘是必需的★: 睡眠期间面板收不到数据, LVGL 侧并不知道
+			   画面已经废了, 不 invalidate 的话唤醒后停在旧画面甚至空白 */
+			lv_obj_invalidate(lv_screen_active());
+			ServiceState = EVT_RUN;
+			break;
+
 		case EVT_ERROR:
 			/* 终端错误态: 只报一次, 之后空转让出(不自愈, 理由见文件头 @note) */
 			if (0 == s_error_reported)
@@ -250,4 +284,30 @@ int8_t service_lvgl_init(void)
 	}
 
 	return 0;
+}
+
+/******************************************************************************
+ * @name    service_lvgl_sleep
+ * @brief   请求 LVGL 服务休眠: 停 UI 泵 + 显示与触摸一起休眠
+ * @param   无
+ *
+ * @note    只改状态位, 真正的动作在 lvgl 任务里做(唯一能碰 LVGL/SPI 的上下文);
+ *          任务正阻塞在 osDelay 里, 最慢 SERVICE_LVGL_SLEEP_TICK 后生效。
+ *          EVT_ERROR 态下请求会被吞掉(错误分支不再回 EVT_RUN)
+ *****************************************************************************/
+void service_lvgl_sleep(void)
+{
+	ServiceState = EVT_SLEEP;
+}
+
+/******************************************************************************
+ * @name    service_lvgl_wakeup
+ * @brief   请求 LVGL 服务唤醒: 重开显示/触摸外设并整屏重绘
+ * @param   无
+ *
+ * @note    回 EVT_RUN 而不是 EVT_INIT: lv_init 不可重入
+ *****************************************************************************/
+void service_lvgl_wakeup(void)
+{
+	ServiceState = EVT_WAKE;
 }

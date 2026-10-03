@@ -75,7 +75,7 @@ static void service_key_task(void *p_arg)
     if (SERVICE_KEY_OK != rc)
     {
         log_printf("[KEY] key_bsp_inst 失败 rc=%d "
-               "(-1 ADC实例 -4 ADC初始化 -5 采样自检; 查 PA2 接线与 HAL_ADC_MspInit)\r\n",
+               "(-1 ADC实例 -4 ADC初始化 -5 采样自检; 查 PA2 接线与 adc_hal 的引脚cfg)\r\n",
                (int)rc);
         osThreadExit();
     }

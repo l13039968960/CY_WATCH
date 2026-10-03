@@ -14,7 +14,8 @@
  *
  * Processing flow:
  *
- * call exti_driver_inst() to construct, attach callback, then use function pointers.
+ * exti_driver_inst() 构造(不碰硬件) -> pf_init() 配引脚并注册分发表
+ * -> attach callback -> 用函数指针.
  *
  * @version V1.0
  *
@@ -25,6 +26,8 @@
 
 /********************************* 前向声明 *********************************/
 static int8_t exti_deinst(exti_driver_t *p_exti_instance);
+static int8_t exti_init(exti_driver_t *p_exti_instance);
+static int8_t exti_deinit(exti_driver_t *p_exti_instance);
 
 /* 底层EXTI操作 (对外接口, 使用void *匹配上层接口) */
 static int8_t exti_enable_interrupt(void *p_ctx);
@@ -168,17 +171,17 @@ static int8_t exti_attach_callback(void *p_ctx,
 	return 0;
 }
 
-/********************************* 构造与析构 *********************************/
+/********************************* 初始化与收尾 *********************************/
 
 /******************************************************************************
- * @name    exti_deinst
- * @brief   EXTI驱动析构: 失能中断、反初始化引脚并清除函数指针
+ * @name    exti_init
+ * @brief   占用: 配引脚为中断模式 + 注册到中断分发表
  * @param   p_exti_instance[in]
  *
  * @return  0 success
  *         -1 exti_instance null
  *****************************************************************************/
-static int8_t exti_deinst(exti_driver_t *p_exti_instance)
+static int8_t exti_init(exti_driver_t *p_exti_instance)
 {
 	uint8_t line;
 
@@ -187,15 +190,64 @@ static int8_t exti_deinst(exti_driver_t *p_exti_instance)
 		return -1;
 	}
 
-	/* 失能中断并反初始化引脚 */
-	HAL_NVIC_DisableIRQ(p_exti_instance->cfg.irqn);
-	HAL_GPIO_DeInit(p_exti_instance->cfg.p_port, p_exti_instance->cfg.pin);
+	/* 配置GPIO为外部中断模式. HAL_GPIO_Init 内部会配 SYSCFG_EXTICR 的线映射,
+	   并按 mode 里的 IT 位写 EXTI 的 IMR/RTSR/FTSR —— 这些仍归它管 */
+	(void)p_exti_instance->gpio.pf_init(&p_exti_instance->gpio);
 
-	/* 从注册表移除 */
-	line = exti_pin_to_line(p_exti_instance->cfg.pin);
+	/* 注册到分发表(多实例按线号反查) */
+	line = exti_pin_to_line(p_exti_instance->cfg.gpio.pins);
+	g_exti_instances[line] = p_exti_instance;
+
+	return 0;
+}
+
+/******************************************************************************
+ * @name    exti_deinit
+ * @brief   释放: 关NVIC + 从分发表摘除 + 反初始化引脚
+ * @param   p_exti_instance[in]
+ *
+ * @return  0 success
+ *         -1 exti_instance null
+ *****************************************************************************/
+static int8_t exti_deinit(exti_driver_t *p_exti_instance)
+{
+	uint8_t line;
+
+	if (NULL == p_exti_instance)
+	{
+		return -1;
+	}
+
+	HAL_NVIC_DisableIRQ(p_exti_instance->cfg.irqn);
+
+	/* 先摘表再放引脚: 引脚一悬空, 边沿可能立刻触发一次中断 */
+	line = exti_pin_to_line(p_exti_instance->cfg.gpio.pins);
 	if (line < 16U && g_exti_instances[line] == p_exti_instance)
 	{
 		g_exti_instances[line] = NULL;
+	}
+
+	/* 反初始化引脚(DeInit → 模拟输入, 顺序在 gpio_hal 里) */
+	(void)p_exti_instance->gpio.pf_deinit(&p_exti_instance->gpio);
+
+	return 0;
+}
+
+/********************************* 构造与析构 *********************************/
+
+/******************************************************************************
+ * @name    exti_deinst
+ * @brief   EXTI驱动析构: 清除接口、回调与函数指针(硬件由 pf_deinit 释放)
+ * @param   p_exti_instance[in]
+ *
+ * @return  0 success
+ *         -1 exti_instance null
+ *****************************************************************************/
+static int8_t exti_deinst(exti_driver_t *p_exti_instance)
+{
+	if (NULL == p_exti_instance)
+	{
+		return -1;
 	}
 
 	/* 清除接口、回调与函数指针 */
@@ -203,6 +255,8 @@ static int8_t exti_deinst(exti_driver_t *p_exti_instance)
 	p_exti_instance->pf_interrupt_cb = NULL;
 	p_exti_instance->pf_inst = NULL;
 	p_exti_instance->pf_deinst = NULL;
+	p_exti_instance->pf_init = NULL;
+	p_exti_instance->pf_deinit = NULL;
 	p_exti_instance->pf_enable_interrupt = NULL;
 	p_exti_instance->pf_disable_interrupt = NULL;
 	p_exti_instance->pf_attach_callback = NULL;
@@ -212,7 +266,7 @@ static int8_t exti_deinst(exti_driver_t *p_exti_instance)
 
 /******************************************************************************
  * @name    exti_driver_inst
- * @brief   EXTI驱动构造函数: 配置GPIO为外部中断、注入延时接口、注册分发表、挂载函数指针
+ * @brief   EXTI驱动构造函数: 存配置、注入延时接口、挂载函数指针(不碰硬件)
  * @param   p_exti_instance[out]   EXTI驱动实例
  * @param   p_cfg[in]             EXTI硬件配置
  * @param   p_delay_interface[in]  延时接口(由调用方注入)
@@ -220,7 +274,7 @@ static int8_t exti_deinst(exti_driver_t *p_exti_instance)
  * @return  0 success
  *         -1 exti_instance null
  *         -2 cfg null
- *         -3 port null
+ *         -3 gpio 实例构造失败(端口空)
  *         -4 pin invalid (非单一有效引脚位)
  *         -5 delay interface null
  *****************************************************************************/
@@ -228,9 +282,6 @@ int8_t exti_driver_inst(exti_driver_t *p_exti_instance,
 						exti_cfg_t *p_cfg,
 						exti_delay_interface_t *p_delay_interface)
 {
-	GPIO_InitTypeDef GPIO_InitStructure = {0};
-	uint8_t line;
-
 	if (NULL == p_exti_instance)
 	{
 		return -1;
@@ -241,13 +292,13 @@ int8_t exti_driver_inst(exti_driver_t *p_exti_instance,
 		return -2;
 	}
 
-	if (NULL == p_cfg->p_port)
+	if (0 != gpio_driver_inst(&p_exti_instance->gpio, &p_cfg->gpio))
 	{
 		return -3;
 	}
 
 	/* 校验引脚为单一有效位(EXTI线0-15) */
-	if (0U == p_cfg->pin || 0U != (p_cfg->pin & (p_cfg->pin - 1U)))
+	if (0U == p_cfg->gpio.pins || 0U != (p_cfg->gpio.pins & (p_cfg->gpio.pins - 1U)))
 	{
 		return -4;
 	}
@@ -262,20 +313,11 @@ int8_t exti_driver_inst(exti_driver_t *p_exti_instance,
 	p_exti_instance->cfg = *p_cfg;
 	p_exti_instance->pf_interrupt_cb = NULL;
 
-	/* 配置GPIO为外部中断模式(HAL内部使能SYSCFG时钟与EXTI线) */
-	GPIO_InitStructure.Pin = p_exti_instance->cfg.pin;
-	GPIO_InitStructure.Mode = p_exti_instance->cfg.mode;
-	GPIO_InitStructure.Pull = p_exti_instance->cfg.pull;
-	GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_HIGH;
-	HAL_GPIO_Init(p_exti_instance->cfg.p_port, &GPIO_InitStructure);
-
-	/* 注册到中断分发表(多实例按线号反查) */
-	line = exti_pin_to_line(p_exti_instance->cfg.pin);
-	g_exti_instances[line] = p_exti_instance;
-
 	/* 挂载函数指针 */
 	p_exti_instance->pf_inst = exti_driver_inst;
 	p_exti_instance->pf_deinst = exti_deinst;
+	p_exti_instance->pf_init = exti_init;
+	p_exti_instance->pf_deinit = exti_deinit;
 	p_exti_instance->pf_enable_interrupt = exti_enable_interrupt;
 	p_exti_instance->pf_disable_interrupt = exti_disable_interrupt;
 	p_exti_instance->pf_attach_callback = exti_attach_callback;

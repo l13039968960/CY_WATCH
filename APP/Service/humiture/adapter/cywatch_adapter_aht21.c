@@ -26,6 +26,31 @@ extern iic_driver_t iic_instance;
 static aht21_iic_interface_t   aht21_iic_interface_instance;
 static aht21_delay_interface_t aht21_delay_instance;
 
+/* 共享总线(PB6/PB7)的占用标记. iic_hal 按 ref_count 门控 —— 计数归零才真的
+   释放 SDA/SCL 引脚, 所以 MPU6050/MAX30102/AHT21 三个设备必须各占各放.
+   @note 标记不是冗余: 服务的 EVT_HUMITURE_INIT 是重试循环(最多调 5 次 inst),
+         没有它每失败一次就多抬一分, 而休眠/析构只放一次 —— 计数只增不减,
+         总线永远回不到 0 */
+static uint8_t s_iic_claimed = 0U;
+
+static void iic_claim(void)
+{
+    if (0U == s_iic_claimed)
+    {
+        (void)iic_instance.pf_init(&iic_instance);
+        s_iic_claimed = 1U;
+    }
+}
+
+static void iic_release(void)
+{
+    if (0U != s_iic_claimed)
+    {
+        (void)iic_instance.pf_deinit(&iic_instance);
+        s_iic_claimed = 0U;
+    }
+}
+
 /* cmsis osDelay 返回 osStatus_t, 驱动 delay 接口要求 void(*)(uint32_t), 包一层丢返回值.
    @note osDelay 依赖调度器 —— humiture_bsp_inst() 内含上百毫秒延时(上电等待 100ms +
          自校准 40ms), 必须在 osKernelStart() 之后的任务上下文里调用 */
@@ -53,6 +78,9 @@ static int8_t iic_read_frame(uint8_t dev_addr, uint8_t *pdata, uint8_t size)
 
 int8_t humiture_bsp_inst(void)
 {
+    /* 先占住共享总线: 下面的 aht21_inst 里就有 I2C 读写(状态字自检) */
+    iic_claim();
+
     aht21_iic_interface_instance.pf_readreg     = iic_readreg;
     aht21_iic_interface_instance.pf_write_frame = iic_write_frame;
     aht21_iic_interface_instance.pf_read_frame  = iic_read_frame;
@@ -66,7 +94,14 @@ int8_t humiture_bsp_inst(void)
 
 int8_t humiture_bsp_deinst(void)
 {
-    return aht21_instance.pf_deinst(&aht21_instance);
+    int8_t ret;
+
+    ret = aht21_instance.pf_deinst(&aht21_instance);
+
+    /* 析构完再放总线: pf_deinst 里还要经 I2C 写器件 */
+    iic_release();
+
+    return ret;
 }
 
 int8_t humiture_bsp_read_id(void)
@@ -82,10 +117,24 @@ int8_t humiture_bsp_read_temp_humi(float *p_temperature, float *p_humidity)
 
 int8_t humiture_bsp_hibernating(void)
 {
-    return aht21_instance.pf_hibernating(&aht21_instance);
+    int8_t ret;
+
+    ret = aht21_instance.pf_hibernating(&aht21_instance);
+
+    /* 器件已睡, 本设备退出共享总线(计数减一, 归零才真的放引脚) */
+    iic_release();
+
+    return ret;
 }
 
 int8_t humiture_bsp_wakeup(void)
 {
-    return aht21_instance.pf_wakeup(&aht21_instance);
+    int8_t ret;
+
+    /* 先占回总线再唤醒: pf_wakeup 里要经 I2C 写器件 */
+    iic_claim();
+
+    ret = aht21_instance.pf_wakeup(&aht21_instance);
+
+    return ret;
 }

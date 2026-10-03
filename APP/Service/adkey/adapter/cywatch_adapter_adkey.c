@@ -26,8 +26,8 @@
  * @note 1 tab == 4 spaces!
  *
  * @note ADKEY 独占 ADC1_IN2 (PA2), 实例在本层创建(不与别的设备共享, 故不像 W25Q64
- *       adapter 那样 extern 应用层的总线实例). PA2 的模拟模式在 HAL_ADC_MspInit
- *       里配置, 由 adc_init 内部的 HAL_ADC_Init 回调触发。
+ *       adapter 那样 extern 应用层的总线实例). ADC1 时钟与 PA2 的模拟模式都在
+ *       adc_hal 的 pf_init 里配(不走 MSP), 所以引脚得由本层的 cfg 给。
  *
  * @note 本层只做"转发 + 接口装配", 不含按键阈值判定与去抖 —— 那两样在 BSP 驱动里。
  *****************************************************************************/
@@ -42,6 +42,8 @@
 #define ADKEY_ADC_BASE     ADC1
 #define ADKEY_ADC_CHANNEL  ADC_CHANNEL_2
 #define ADKEY_ADC_SAMPLING ADC_SAMPLETIME_84CYCLES
+#define ADKEY_ADC_PORT     GPIOA
+#define ADKEY_ADC_PIN      GPIO_PIN_2
 
 /***********************************Defines************************************/
 
@@ -122,6 +124,12 @@ int8_t key_bsp_inst(void)
 	adc_cfg.p_adc_base    = ADKEY_ADC_BASE;
 	adc_cfg.channel       = ADKEY_ADC_CHANNEL;
 	adc_cfg.sampling_time = ADKEY_ADC_SAMPLING;
+
+	/* 通道所在引脚由本层给: adc_hal 不再走 MSP, 时钟与 PA2 都在 pf_init 里配 */
+	adc_cfg.gpio.p_port = ADKEY_ADC_PORT;
+	adc_cfg.gpio.pins   = ADKEY_ADC_PIN;
+	adc_cfg.gpio.mode   = GPIO_MODE_ANALOG;
+	adc_cfg.gpio.pull   = GPIO_NOPULL;
 
 	adc_cfg.init.ClockPrescaler        = ADC_CLOCK_SYNC_PCLK_DIV4;
 	adc_cfg.init.Resolution            = ADC_RESOLUTION_12B;

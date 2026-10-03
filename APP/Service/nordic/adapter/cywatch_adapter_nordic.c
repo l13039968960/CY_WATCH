@@ -78,6 +78,7 @@
  ******************************************************************************/
 #include "cywatch_adapter_nordic.h"
 #include "uart_hal.h"
+#include "dma_hal.h"
 #include "system/delay/delay.h"
 #include "cmsis_os2.h"
 
@@ -105,6 +106,8 @@
 static uart_driver_t          g_uart1_driver;    /* 驱动实例(内嵌 huart + 三条环形缓冲) */
 static DMA_HandleTypeDef      g_uart1_hdma_tx;   /* DMA2_Stream7 / Ch4 / NORMAL */
 static DMA_HandleTypeDef      g_uart1_hdma_rx;   /* DMA2_Stream2 / Ch4 / CIRCULAR */
+static dma_driver_t           g_uart1_dma_tx;    /* 上面两条流的驱动实例 */
+static dma_driver_t           g_uart1_dma_rx;
 static uart_cfg_t             g_uart1_cfg;
 static uart_delay_interface_t g_uart1_delay;
 
@@ -171,55 +174,57 @@ static int8_t nordic_bsp_check_nvic_prio(void)
 
 /**
  * @name  nordic_bsp_dma_init
- * @brief 初始化 USART1 的两个 DMA 流(TX=NORMAL, RX=CIRCULAR)并配 NVIC
+ * @brief 装配 USART1 的两个 DMA 流(TX=NORMAL, RX=CIRCULAR)并配 NVIC
  * @param 无
- * @return 0 成功 / -1 HAL_DMA_Init 失败
- * @note   DMA2 时钟在本函数里显式打开: 此前它只被 SPI1 的 MspInit 顺带开过
- *         (spi.c 的 USER CODE), 属隐式依赖, 不能指望
+ * @return 0 成功 / -1 流装配失败
+ * @note   DMA2 时钟由 dma_hal 在装配流时打开
  * @note   HAL_DMA_Init 是阻塞的且用 HAL_GetTick 做超时, 故必须在 HAL_Init()
  *         之后调用(本函数经 nordic_bsp_inst 由 main 的 USER CODE 2 区调用, 满足)
+ * @note   Parent 不在这里设: HAL_UART_Transmit_DMA/Receive_DMA 内部的
+ *         __HAL_LINKDMA 会把它回指到 huart
  */
 static int8_t nordic_bsp_dma_init(void)
 {
-	__HAL_RCC_DMA2_CLK_ENABLE();
+	dma_cfg_t cfg_tx;
+	dma_cfg_t cfg_rx;
 
-	/* TX: DMA2_Stream7_Ch4, NORMAL, 内存->外设, 字节宽度(驱动按"整段"发起) */
-	g_uart1_hdma_tx.Instance                 = DMA2_Stream7;
-	g_uart1_hdma_tx.Init.Channel             = DMA_CHANNEL_4;
-	g_uart1_hdma_tx.Init.Direction           = DMA_MEMORY_TO_PERIPH;
-	g_uart1_hdma_tx.Init.PeriphInc           = DMA_PINC_DISABLE;
-	g_uart1_hdma_tx.Init.MemInc              = DMA_MINC_ENABLE;
-	g_uart1_hdma_tx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-	g_uart1_hdma_tx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-	g_uart1_hdma_tx.Init.Mode                = DMA_NORMAL;
-	g_uart1_hdma_tx.Init.Priority            = DMA_PRIORITY_MEDIUM;
-	g_uart1_hdma_tx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
-	if (HAL_OK != HAL_DMA_Init(&g_uart1_hdma_tx))
+	/* TX: DMA2_Stream7_Ch4, NORMAL, 内存->外设(驱动按"整段"发起) */
+	cfg_tx.p_stream      = DMA2_Stream7;
+	cfg_tx.channel       = DMA_CHANNEL_4;
+	cfg_tx.irqn          = DMA2_Stream7_IRQn;
+	cfg_tx.direction     = DMA_MEMORY_TO_PERIPH;
+	cfg_tx.mode          = DMA_NORMAL;
+	cfg_tx.priority      = DMA_PRIORITY_MEDIUM;
+	cfg_tx.nvic_priority = NORDIC_BSP_NVIC_PRIO_TX_DMA;
+
+	if (0 != dma_driver_inst(&g_uart1_dma_tx, &g_uart1_hdma_tx, &cfg_tx))
 	{
 		return -1;
 	}
 
-	/* RX: DMA2_Stream2_Ch4, CIRCULAR, 外设->内存, 字节宽度(IDLE 接收靠它) */
-	g_uart1_hdma_rx.Instance                 = DMA2_Stream2;
-	g_uart1_hdma_rx.Init.Channel             = DMA_CHANNEL_4;
-	g_uart1_hdma_rx.Init.Direction           = DMA_PERIPH_TO_MEMORY;
-	g_uart1_hdma_rx.Init.PeriphInc           = DMA_PINC_DISABLE;
-	g_uart1_hdma_rx.Init.MemInc              = DMA_MINC_ENABLE;
-	g_uart1_hdma_rx.Init.PeriphDataAlignment = DMA_PDATAALIGN_BYTE;
-	g_uart1_hdma_rx.Init.MemDataAlignment    = DMA_MDATAALIGN_BYTE;
-	g_uart1_hdma_rx.Init.Mode                = DMA_CIRCULAR;
-	g_uart1_hdma_rx.Init.Priority            = DMA_PRIORITY_HIGH;
-	g_uart1_hdma_rx.Init.FIFOMode            = DMA_FIFOMODE_DISABLE;
-	if (HAL_OK != HAL_DMA_Init(&g_uart1_hdma_rx))
+	if (0 != g_uart1_dma_tx.pf_init(&g_uart1_dma_tx))
 	{
 		return -1;
 	}
 
-	HAL_NVIC_SetPriority(DMA2_Stream2_IRQn, NORDIC_BSP_NVIC_PRIO_RX_DMA, 0u);
-	HAL_NVIC_EnableIRQ(DMA2_Stream2_IRQn);
+	/* RX: DMA2_Stream2_Ch4, CIRCULAR, 外设->内存(IDLE 接收靠它) */
+	cfg_rx.p_stream      = DMA2_Stream2;
+	cfg_rx.channel       = DMA_CHANNEL_4;
+	cfg_rx.irqn          = DMA2_Stream2_IRQn;
+	cfg_rx.direction     = DMA_PERIPH_TO_MEMORY;
+	cfg_rx.mode          = DMA_CIRCULAR;
+	cfg_rx.priority      = DMA_PRIORITY_HIGH;
+	cfg_rx.nvic_priority = NORDIC_BSP_NVIC_PRIO_RX_DMA;
 
-	HAL_NVIC_SetPriority(DMA2_Stream7_IRQn, NORDIC_BSP_NVIC_PRIO_TX_DMA, 0u);
-	HAL_NVIC_EnableIRQ(DMA2_Stream7_IRQn);
+	if (0 != dma_driver_inst(&g_uart1_dma_rx, &g_uart1_hdma_rx, &cfg_rx))
+	{
+		return -1;
+	}
+
+	if (0 != g_uart1_dma_rx.pf_init(&g_uart1_dma_rx))
+	{
+		return -1;
+	}
 
 	HAL_NVIC_SetPriority(USART1_IRQn, NORDIC_BSP_NVIC_PRIO_USART, 0u);
 	HAL_NVIC_EnableIRQ(USART1_IRQn);
@@ -572,6 +577,15 @@ int8_t nordic_bsp_inst(nordic_cfg_t *p_cfg)
 	g_uart1_cfg.p_hdma_tx         = &g_uart1_hdma_tx;
 	g_uart1_cfg.p_hdma_rx         = &g_uart1_hdma_rx;
 
+	/* 引脚由本层给: uart_hal 不走 MSP, USART1 时钟与 PA9/PA10 在 pf_init 里配.
+	   与 usart.c 的 UART_Init() 是同一组引脚, 重复配置无副作用 */
+	g_uart1_cfg.gpio.p_port = GPIOA;
+	g_uart1_cfg.gpio.pins   = GPIO_PIN_9 | GPIO_PIN_10;
+	g_uart1_cfg.gpio.mode   = GPIO_MODE_AF_PP;
+	g_uart1_cfg.gpio.pull   = GPIO_NOPULL;
+	g_uart1_cfg.gpio.speed  = GPIO_SPEED_FREQ_VERY_HIGH;
+	g_uart1_cfg.gpio.af     = GPIO_AF7_USART1;
+
 	/* 延时接口: 只填驱动要求的那一个口 */
 	g_uart1_delay.pf_delay_us = delay_us;
 
@@ -637,6 +651,13 @@ int8_t nordic_bsp_deinst(void)
 	HAL_NVIC_DisableIRQ(DMA2_Stream2_IRQn);
 	HAL_NVIC_DisableIRQ(DMA2_Stream7_IRQn);
 	HAL_NVIC_DisableIRQ(USART1_IRQn);
+
+	/* 先放掉两条流再关 UART: 反过来的话 DMA 请求还挂在 USART1 上, 关外设时钟时
+	   那些请求没有应答方, 流会卡在使能态. 顺带归还 DMA2 的使用计数 */
+	(void)g_uart1_dma_rx.pf_deinit(&g_uart1_dma_rx);
+	(void)g_uart1_dma_tx.pf_deinit(&g_uart1_dma_tx);
+	(void)g_uart1_dma_rx.pf_deinst(&g_uart1_dma_rx);
+	(void)g_uart1_dma_tx.pf_deinst(&g_uart1_dma_tx);
 
 	/* 按 spi/iic 规范: 关外设走 pf_deinit, 析构走 pf_deinst. 反序调用的话
 	   pf_deinst 见到 ref_count != 0 会直接返回 -2, USART1 就拆不掉 */
@@ -742,16 +763,10 @@ void USART1_IRQHandler(void)
 
 void DMA2_Stream7_IRQHandler(void)
 {
-	if (NULL != g_uart1_driver.pf_dma_tx_irq_handler)
-	{
-		g_uart1_driver.pf_dma_tx_irq_handler(&g_uart1_driver); /* TX 流 */
-	}
+	dma_irq_handler(DMA2_Stream7); /* TX 流 */
 }
 
 void DMA2_Stream2_IRQHandler(void)
 {
-	if (NULL != g_uart1_driver.pf_dma_rx_irq_handler)
-	{
-		g_uart1_driver.pf_dma_rx_irq_handler(&g_uart1_driver); /* RX 流 */
-	}
+	dma_irq_handler(DMA2_Stream2); /* RX 流 */
 }

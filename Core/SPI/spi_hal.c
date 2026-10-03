@@ -35,7 +35,94 @@ static int8_t spi_transmit(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_
 static int8_t spi_receive(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
 static int8_t spi_transmit_receive(spi_driver_t *p_spi_instance, uint8_t *ptx, uint8_t *prx, uint32_t size);
 static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
+static int8_t spi_receive_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size);
 
+/********************************* 私有辅助 *********************************/
+
+/******************************************************************************
+ * @name    spi_clk_enable
+ * @brief   开本 SPI 外设的时钟(引脚时钟由 gpio_hal 负责)
+ * @param   p_spi[in]  SPI外设基地址
+ *
+ * @note    只能按基地址分派: RCC 的时钟使能宏连寄存器位都是编译期固定的
+ *          (__HAL_RCC_SPI1_CLK_ENABLE 直接写 APB2ENR 的 SPI1EN), HAL 没有
+ *          "按基地址查位" 的通用 API.
+ *****************************************************************************/
+static void spi_clk_enable(SPI_TypeDef *p_spi)
+{
+	if (SPI1 == p_spi)      { __HAL_RCC_SPI1_CLK_ENABLE(); }
+	else if (SPI2 == p_spi) { __HAL_RCC_SPI2_CLK_ENABLE(); }
+	else if (SPI3 == p_spi) { __HAL_RCC_SPI3_CLK_ENABLE(); }
+}
+
+/******************************************************************************
+ * @name    spi_clk_disable
+ * @brief   关本 SPI 外设的时钟(pf_deinit 收尾用)
+ * @param   p_spi[in] SPI外设基地址
+ *
+ * @note    ★只关 SPI 外设时钟★: GPIO 端口与 DMA 控制器都是多外设共用的
+ *          (GPIOA 上还有 ADC/EXTI/UART, DMA2 上还有 USART1 的两条流),
+ *          连它们一起关会把别的设备一起打死.
+ *****************************************************************************/
+static void spi_clk_disable(SPI_TypeDef *p_spi)
+{
+	if (SPI1 == p_spi)      { __HAL_RCC_SPI1_CLK_DISABLE(); }
+	else if (SPI2 == p_spi) { __HAL_RCC_SPI2_CLK_DISABLE(); }
+	else if (SPI3 == p_spi) { __HAL_RCC_SPI3_CLK_DISABLE(); }
+}
+
+/******************************************************************************
+ * @name    spi_dma_init_stream
+ * @brief   交给 dma_hal 装配一条流, 再把句柄链到内嵌的 hspi 上
+ * @param   p_spi_instance[in]
+ * @param   p_dma_cfg[in]    该方向的流描述
+ * @param   p_dma_driver[in] 驱动内嵌的流实例(dma_tx 或 dma_rx)
+ * @param   p_hdma[in]       驱动内嵌的DMA句柄(hdma_tx 或 hdma_rx)
+ * @param   is_tx[in]        1=发送 0=接收(只决定往 hspi 的哪个槽挂)
+ *
+ * @return  0 success
+ *         -1 该方向未配(p_stream 为 NULL), 不建流
+ *         -2 dma_hal 装配失败
+ *         -3 dma_hal 建流失败
+ *
+ * @note    Parent 与 Link 留在本层: DMA 中断要靠 Parent 反查到本实例,
+ *          再由 HAL 转成 HAL_SPI_TxCpltCallback / RxCpltCallback.
+ *****************************************************************************/
+static int8_t spi_dma_init_stream(spi_driver_t *p_spi_instance,
+								  dma_cfg_t *p_dma_cfg,
+								  dma_driver_t *p_dma_driver,
+								  DMA_HandleTypeDef *p_hdma,
+								  uint8_t is_tx)
+{
+	if (NULL == p_dma_cfg->p_stream)
+	{
+		return -1;
+	}
+
+	if (0 != dma_driver_inst(p_dma_driver, p_hdma, p_dma_cfg))
+	{
+		return -2;
+	}
+
+	if (0 != p_dma_driver->pf_init(p_dma_driver))
+	{
+		return -3;
+	}
+
+	/* 回指内嵌SPI句柄: DMA中断靠它反查到本实例 */
+	p_hdma->Parent = &p_spi_instance->hspi;
+
+	if (0 != is_tx)
+	{
+		p_spi_instance->hspi.hdmatx = p_hdma;
+	}
+	else
+	{
+		p_spi_instance->hspi.hdmarx = p_hdma;
+	}
+
+	return 0;
+}
 
 /******************************************************************************
  * @name    HAL_SPI_TxCpltCallback
@@ -52,6 +139,28 @@ void HAL_SPI_TxCpltCallback(SPI_HandleTypeDef *hspi)
 
 	/* OS: 释放信号量, 唤醒等待的发送任务
 	 * 裸机: 置标志位, 唤醒阻塞状态 */
+	if (NULL != p_spi->p_semaphore_interface &&
+		NULL != p_spi->p_semaphore_interface->pf_release)
+	{
+		(void)p_spi->p_semaphore_interface->pf_release();
+	}
+}
+
+/******************************************************************************
+ * @name    HAL_SPI_RxCpltCallback
+ * @brief   重写HAL弱函数: SPI RX DMA完成回调(在DMA中断上下文执行)
+ * @param   hspi[in] SPI句柄(即 spi_driver_t 首个成员 &p_spi->hspi)
+ *
+ * @note    与 TxCplt 同理由 container_of 反查实例, 中断内只释放信号量.
+ * @note    2LINES+MASTER 下 HAL_SPI_Receive_DMA 实际走的是 TransmitReceive,
+ *          该路径只把这个回调挂到 hdmarx 上、hdmatx 的完成回调被置 NULL,
+ *          所以收发两侧不会串到对方的信号量上.
+ *****************************************************************************/
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+	/* container_of: hspi 位于实例偏移0处, 强转即得实例指针 */
+	spi_driver_t *p_spi = (spi_driver_t *)hspi;
+
 	if (NULL != p_spi->p_semaphore_interface &&
 		NULL != p_spi->p_semaphore_interface->pf_release)
 	{
@@ -244,6 +353,57 @@ static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uin
 #endif // OS_SUPPORTING
 }
 
+/******************************************************************************
+ * @name    spi_receive_dma
+ * @brief   DMA中断方式接收字节流(启动+等待合并, 阻塞至完成/超时)
+ * @param   p_spi_instance[in] SPI驱动实例
+ * @param   pdata[out] 数据缓冲区
+ * @param   size[in]   字节数
+ *
+ * @return  0 success (接收完成)
+ *         -1 spi_instance null
+ *         -2 dma rx handle null (cfg.dma_rx 没配, 或 pf_init 没调过)
+ *         -3 semaphore interface null
+ *         -4 spi receive dma error
+ *         -5 wait error (信号量等待失败/超时)
+ *
+ * @note    本工程是 OS 环境(OS_SUPPORTING), 等待走注入的信号量, 完成回调在
+ *          HAL_SPI_RxCpltCallback. 超时时限由注入方的 pf_wait 决定(本工程 200ms).
+ * @note    返回时 HAL 已完成收尾(等到 BSY 清零), 片选可以安全拉高.
+ *****************************************************************************/
+static int8_t spi_receive_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uint32_t size)
+{
+	if (NULL == p_spi_instance)
+	{
+		return -1;
+	}
+
+	if (NULL == p_spi_instance->hspi.hdmarx)
+	{
+		return -2;
+	}
+
+	if ((NULL == p_spi_instance->p_semaphore_interface) ||
+		(NULL == p_spi_instance->p_semaphore_interface->pf_wait))
+	{
+		return -3;
+	}
+
+	if (HAL_OK != HAL_SPI_Receive_DMA(&p_spi_instance->hspi,
+									  pdata, (uint16_t)size))
+	{
+		return -4;
+	}
+
+	/* pf_wait() 无形参: 句柄与超时策略都在注入方(见其头文件注释) */
+	if (0 != p_spi_instance->p_semaphore_interface->pf_wait())
+	{
+		return -5;
+	}
+
+	return 0;
+}
+
 /********************************* 构造与析构 *********************************/
 
 /******************************************************************************
@@ -255,8 +415,10 @@ static int8_t spi_transmit_dma(spi_driver_t *p_spi_instance, uint8_t *pdata, uin
  *         -1 spi_instance null
  *         -2 spi init error
  *
- * @note    引脚(PA5/PA7)、TX DMA、NVIC与SPI1时钟都在 HAL_SPI_MspInit 里配置,
- *          由 HAL_SPI_Init 内部回调完成, 本函数不用重复开时钟。
+ * @note    SPI/GPIO/DMA 的时钟、引脚、两条DMA流与它们的NVIC都在本函数里配,
+ *          不走 ST 的 MSP 回调(该回调已从 stm32f4xx_hal_msp.c 删除).
+ *          顺序: 时钟 → 引脚 → DMA流+NVIC → HAL_SPI_Init.
+ *          ★不用手工 __HAL_SPI_ENABLE★: HAL 在启动 DMA 传输时自己会开.
  *
  * @note    引用计数: ref_count 由 0→1 时才真正初始化外设, 已有使用者时只累加计数
  *          (同一实例被重复init不会把外设重配一遍)。
@@ -268,9 +430,25 @@ static int8_t spi_init(spi_driver_t *p_spi_instance)
 		return -1;
 	}
 
-	/* 首个使用者才真正初始化SPI外设(MspInit里配引脚/DMA/NVIC/时钟) */
+	/* 首个使用者才真正初始化SPI外设 */
 	if (0 == p_spi_instance->ref_count)
 	{
+		/* 时钟与引脚都在这里配: 后面 HAL_SPI_Init 内部那次 HAL_SPI_MspInit
+		   是空弱函数, 不会再动 GPIO —— 所以这一步不能省, 也不能挪到后面 */
+		spi_clk_enable(p_spi_instance->cfg.p_spi_base);
+
+		(void)p_spi_instance->gpio.pf_init(&p_spi_instance->gpio);
+
+		/* 两条流: 未配的方向(p_stream=NULL)内部直接跳过、不动句柄(句柄在构造时
+		   已清成NULL). 建流失败不回滚 —— 与 PWM/ADC 一样, 失败由调用方的传输
+		   函数以 -2 暴露出来 */
+		(void)spi_dma_init_stream(p_spi_instance, &p_spi_instance->cfg.dma_tx,
+								  &p_spi_instance->dma_tx,
+								  &p_spi_instance->hdma_tx, 1);
+		(void)spi_dma_init_stream(p_spi_instance, &p_spi_instance->cfg.dma_rx,
+								  &p_spi_instance->dma_rx,
+								  &p_spi_instance->hdma_rx, 0);
+
 		if (HAL_OK != HAL_SPI_Init(&p_spi_instance->hspi))
 		{
 			return -2;
@@ -286,15 +464,19 @@ static int8_t spi_init(spi_driver_t *p_spi_instance)
 
 /******************************************************************************
  * @name    spi_deinit
- * @brief   SPI驱动反初始化: 关闭SPI外设
+ * @brief   SPI驱动反初始化: 停DMA、关闭SPI外设, 并把引脚置低功耗态(模拟输入)
  * @param   p_spi_instance[in]
  *
  * @return  0 success
  *         -1 spi_instance null
  *
- * @note    HAL_SPI_DeInit 会回调 HAL_SPI_MspDeInit: 关SPI1时钟、DeInit PA5/PA7、
- *          HAL_DMA_DeInit。SPI1 是LCD独占, 关时钟不会误伤其他外设。
- *
+ * @note    HAL_SPI_DeInit 回调的 MspDeInit 是空弱函数, 引脚/时钟/DMA 由本函数自己收尾.
+ * @note    本函数有**低功耗语义**: 引脚不能只 DeInit 到复位态 ——
+ *          F4 的 GPIO 复位值是**浮空输入**(不是模拟), 施密特触发器还开着, 悬空脚
+ *          会随噪声来回翻转、白耗电。要再配成模拟输入才算真的关掉输入缓冲。
+ * @note    ★只关 SPI 外设时钟★: GPIO 端口与 DMA 控制器都是多外设共用的,
+ *          关 GPIOA/GPIOB 会打死 PA2(ADC)/PA9,PA10(UART)/PB12(CS) 等,
+ *          关 DMA2 会打死 USART1 的两条流。
  * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设。
  *****************************************************************************/
 static int8_t spi_deinit(spi_driver_t *p_spi_instance)
@@ -313,7 +495,26 @@ static int8_t spi_deinit(spi_driver_t *p_spi_instance)
 	/* 最后一个使用者退出时才真正关闭SPI外设 */
 	if (0 == p_spi_instance->ref_count)
 	{
+		/* 先停 DMA 再关 SPI: 反过来的话 DMA 请求还挂在 SPI 上, 关外设时钟时
+		   那些请求没有应答方, 流会卡在使能态 */
+		if (NULL != p_spi_instance->hspi.hdmatx)
+		{
+			(void)p_spi_instance->dma_tx.pf_deinit(&p_spi_instance->dma_tx);
+			p_spi_instance->hspi.hdmatx = NULL;
+		}
+
+		if (NULL != p_spi_instance->hspi.hdmarx)
+		{
+			(void)p_spi_instance->dma_rx.pf_deinit(&p_spi_instance->dma_rx);
+			p_spi_instance->hspi.hdmarx = NULL;
+		}
+
 		HAL_SPI_DeInit(&p_spi_instance->hspi);
+
+		/* 引脚收尾(DeInit → 模拟输入, 顺序在 gpio_hal 里) */
+		(void)p_spi_instance->gpio.pf_deinit(&p_spi_instance->gpio);
+
+		spi_clk_disable(p_spi_instance->cfg.p_spi_base);
 
 		p_spi_instance->init_state = 0;
 	}
@@ -365,6 +566,7 @@ static int8_t spi_deinst(spi_driver_t *p_spi_instance)
 	p_spi_instance->pf_receive = NULL;
 	p_spi_instance->pf_transmit_receive = NULL;
 	p_spi_instance->pf_transmit_dma = NULL;
+	p_spi_instance->pf_receive_dma = NULL;
 
 	return 0;
 }
@@ -388,6 +590,7 @@ static int8_t spi_deinst(spi_driver_t *p_spi_instance)
  *         -4 semaphore null
  *         -5 delay null
  *         -6 timebase null (仅裸机模式, OS_SUPPORTING 下不会返回)
+ *         -7 gpio port null
  *****************************************************************************/
 int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 					   spi_cfg_t *p_cfg,
@@ -434,6 +637,12 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 	}
 #endif // OS_SUPPORTING
 
+	/* 引脚驱动(端口空/非法由 gpio_hal 拦) */
+	if (0 != gpio_driver_inst(&p_spi_instance->gpio, &p_cfg->gpio))
+	{
+		return -7;
+	}
+
 	/* 加载硬件配置 */
 	p_spi_instance->cfg = *p_cfg;
 
@@ -441,16 +650,12 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 	p_spi_instance->init_state = 0;
 	p_spi_instance->ref_count = 0;
 
-	/* 构建内嵌SPI句柄(hspi 为首个成员, 供DMA完成回调反查实例) */
+	/* 构建内嵌SPI句柄(hspi 为首个成员, 供DMA完成回调反查实例).
+	   hdmatx/hdmarx 先清空: 两条DMA流由 pf_init 建好后回填(未配的方向保持NULL) */
 	p_spi_instance->hspi.Instance = p_cfg->p_spi_base;
 	p_spi_instance->hspi.Init = p_cfg->init;
-	p_spi_instance->hspi.hdmatx = p_cfg->p_hdma_tx;
+	p_spi_instance->hspi.hdmatx = NULL;
 	p_spi_instance->hspi.hdmarx = NULL;
-	if (NULL != p_cfg->p_hdma_tx)
-	{
-		/* 让DMA句柄通过Parent回指内嵌SPI句柄, 使DMA中断能反查到本实例 */
-		p_cfg->p_hdma_tx->Parent = &p_spi_instance->hspi;
-	}
 
 	/* 注入接口 */
 	p_spi_instance->p_semaphore_interface = p_semaphore_interface;
@@ -471,6 +676,7 @@ int8_t spi_driver_inst(spi_driver_t *p_spi_instance,
 	p_spi_instance->pf_receive = spi_receive;
 	p_spi_instance->pf_transmit_receive = spi_transmit_receive;
 	p_spi_instance->pf_transmit_dma = spi_transmit_dma;
+	p_spi_instance->pf_receive_dma = spi_receive_dma;
 
 	return 0;
 }

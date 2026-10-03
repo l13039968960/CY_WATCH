@@ -475,6 +475,10 @@ static int8_t max30102_deinit(struct bsp_max30102_driver *p_max30102_instance)
 		return -1;
 	}
 
+	/* 先关A_FULL中断源与EXTI, 再关断: 器件睡下后不再产生中断, 残留的EXTI使能
+	   只会在唤醒前被引脚电平变化乱触发(与 pf_wakeup 里的 enable 对称) */
+	(void)p_max30102_instance->pf_disable_FIFO_FULL_interrupt(p_max30102_instance);
+
 	/* 进入关断模式, 关闭所有模拟电路 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_MODE_CONFIG,
@@ -969,6 +973,9 @@ static int8_t max30102_hibernating(struct bsp_max30102_driver *p_max30102_instan
 		return -1;
 	}
 
+	/* 先关A_FULL中断源与EXTI, 再关断: 理由同 pf_deinit */
+	(void)p_max30102_instance->pf_disable_FIFO_FULL_interrupt(p_max30102_instance);
+
 	/* 进入休眠/关断模式 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_MODE_CONFIG,
@@ -1007,6 +1014,12 @@ static int8_t max30102_wakeup(struct bsp_max30102_driver *p_max30102_instance)
 	{
 		return -2;
 	}
+
+	/* 与 pf_deinit/pf_hibernating 里的 disable 对称: 把A_FULL中断源与EXTI开回来。
+	   ★必须在这里开★: 服务的 WAKEUP 分支是直接切到 MEASURE 的, 不会重走
+	   enable_FIFO_FULL_interrupt, 少这一句服务会永久阻塞在 wait_interrupt 上
+	   (pf_init 不 enable, 中断由服务在 INIT 分支自己开) */
+	(void)p_max30102_instance->pf_enable_FIFO_FULL_interrupt(p_max30102_instance);
 
 	return 0;
 }

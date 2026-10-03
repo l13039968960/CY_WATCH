@@ -27,6 +27,8 @@
 
 /***********************************Includes***********************************/
 #include "stm32f4xx_hal.h"
+#include "dma_hal.h"
+#include "gpio_hal.h"
 #include <stdint.h>
 
 /***********************************Includes***********************************/
@@ -46,8 +48,20 @@ typedef struct
 {
 	SPI_TypeDef *p_spi_base;      /* SPI外设基地址(如SPI1) */
 	SPI_InitTypeDef init;         /* SPI初始化参数(模式/极性/相位/预分频等) */
-	DMA_HandleTypeDef *p_hdma_tx; /* TX DMA句柄(可为NULL, 不使用DMA发送) */
 	uint32_t tx_timeout_tick;     /* 裸机DMA发送超时计数(ms) */
+
+	/* SCK/MOSI/MISO 的引脚配置(复用推挽). 本层**不用 ST 的 MSP 回调**,
+	   时钟与引脚都交给 gpio_hal, 所以引脚/复用号/速度得由调用方给.
+	   ★片选等普通IO不在此★, 那是调用方自己的 gpio 实例 */
+	gpio_cfg_t gpio;
+
+	/* TX/RX 两组 DMA 描述, 由 pf_init 交给 dma_hal 装配.
+	   p_stream 填 NULL 表示该方向不用 DMA.
+	   ★全双工主模式下收发两组必须都给★: HAL_SPI_Receive_DMA 会转调
+	   HAL_SPI_TransmitReceive_DMA, 后者断言并解引用 hspi->hdmatx —— 只填 RX
+	   会直接 HardFault. "发送仍用阻塞接口" 不等于 "TX 流可以不配". */
+	dma_cfg_t dma_tx;             /* 发送流(pf_transmit_dma / 接收时的哑发) */
+	dma_cfg_t dma_rx;             /* 接收流(pf_receive_dma) */
 } spi_cfg_t;
 
 /* 中断阻塞等待和释放接口 */
@@ -73,8 +87,14 @@ typedef struct
 typedef struct spi_driver
 {
 	/* 第一个成员: 内嵌SPI句柄(按值), 用于在 HAL_SPI_TxCpltCallback 中
-	 * 通过 container_of(首个成员偏移为0) 强转反查本实例, 实现多实例支持 */
+	 * 通过 container_of(首个成员偏移为0) 强转反查本实例, 实现多实例支持。
+	 * ★两个DMA句柄必须放在它后面★ —— hspi 一旦不是首成员, 两个回调里的强转全崩 */
 	SPI_HandleTypeDef hspi;
+	DMA_HandleTypeDef hdma_tx; /* 内嵌TX DMA句柄(按值), 由 dma_hal 装配 */
+	DMA_HandleTypeDef hdma_rx; /* 内嵌RX DMA句柄(按值), 由 dma_hal 装配 */
+	dma_driver_t dma_tx;       /* TX流驱动实例(装配/NVIC/中断分发) */
+	dma_driver_t dma_rx;       /* RX流驱动实例 */
+	gpio_driver_t gpio;        /* SCK/MOSI/MISO 引脚驱动实例 */
 	spi_cfg_t cfg; /* 硬件配置 */
 
 	spi_semaphore_interface_t *p_semaphore_interface; /* OS信号量 */
@@ -122,6 +142,12 @@ typedef struct spi_driver
 	int8_t (*pf_transmit_dma)(struct spi_driver *p_spi_instance,
 							  uint8_t *pdata,
 							  uint32_t size);
+
+	/* DMA中断接收(启动+等待合并, 返回时SPI已空闲).
+	 * 全双工下 HAL 会顺手把发送侧也挂上 DMA 发哑字节, 所以 dma_tx 也必须配 */
+	int8_t (*pf_receive_dma)(struct spi_driver *p_spi_instance,
+							 uint8_t *pdata,
+							 uint32_t size);
 
 } spi_driver_t;
 

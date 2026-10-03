@@ -15,6 +15,8 @@
  * EVT_HUMITURE_MEASURE: 触发一次测量 → 发布 EVT_SERVICE_HUMITURE_DATA
  *                       → osDelay(10s) 原地等下一拍
  * EVT_HUMITURE_ERROR:   发布 BUSY+ERROR, 1s 后自动回 INIT 重试(自愈)
+ * EVT_HUMITURE_SLEEP:   休眠请求 → AHT21 软复位 + 放共享总线 → 停在 SLEEPING,
+ *                       等 service_humiture_wakeup() 把状态改回 INIT
  *
  * @version V1.0
  *
@@ -40,6 +42,9 @@
 #define SERVICE_HUMITURE_INST_RETRY  (5)
 /* 连续多少次读失败判为错误态(单次失败多为总线毛刺, 累积到 3 次才重初始化) */
 #define SERVICE_HUMITURE_ERROR_LIMIT (3)
+
+/* 睡眠态空转节拍(等 service_humiture_wakeup 改状态) */
+#define SERVICE_HUMITURE_SLEEP_TICK  (100u)
 
 static State_Humiture_Service_t ServiceState;
 
@@ -139,6 +144,19 @@ static void service_humiture_run(void *pvParameters)
             osDelay(SERVICE_HUMITURE_PERIOD_MS);
             break;
 
+        case EVT_HUMITURE_SLEEP:
+            /* 睡: AHT21 软复位 + 释放共享 I2C 上本设备那一份占用 */
+            x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_BUSY, 0, NULL);
+            (void)humiture_bsp_hibernating();
+            ServiceState = EVT_HUMITURE_SLEEPING;
+            break;
+
+        case EVT_HUMITURE_SLEEPING:
+            /* 停在这里等 service_humiture_wakeup(); 唤醒回 EVT_HUMITURE_INIT
+               重走构造 —— hibernating 已把器件与总线的占用都放掉了 */
+            osDelay(SERVICE_HUMITURE_SLEEP_TICK);
+            break;
+
         case EVT_HUMITURE_ERROR:
             x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_BUSY, 0, NULL);
             x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_ERROR, 0, NULL);
@@ -164,4 +182,17 @@ void service_humiture_init(void)
         {
         }
     }
+}
+
+void service_humiture_sleep(void)
+{
+    /* @warning 只置状态位. 任务若正卡在 EVT_HUMITURE_INIT 的重试循环或
+       EVT_HUMITURE_ERROR 的 1s 等待里, 那次请求会被后面的状态赋值覆盖掉 */
+    ServiceState = EVT_HUMITURE_SLEEP;
+}
+
+void service_humiture_wakeup(void)
+{
+    /* 回 INIT 重走构造: hibernating 已把器件软复位并放掉了共享总线的占用 */
+    ServiceState = EVT_HUMITURE_INIT;
 }

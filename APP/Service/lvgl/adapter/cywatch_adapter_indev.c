@@ -30,13 +30,10 @@
  *
  * @note 1 tab == 4 spaces!
  *
- * @note 总线归属: 触摸专用位带 I2C(PA8=SCL/PB4=SDA)实例 `touch_iic_instance` 由
- *       应用层 main.c 创建, 本 adapter 只 extern 引用(与 MPU6050/W25Q64 adapter
- *       同一写法), **不自己再建总线**。
- *
- *       ⚠ 该符号绝不能叫 `iic_instance`: 那个名字被 MPU6050/adapter 占用, 指的是
- *         传感器总线 PB6/PB7。同名会让触摸驱动静默地去操作 MPU 那条总线——
- *         编译链接全过, 运行时读到垃圾数据, 极难定位。
+ * @note 总线归属: 触摸那条位带 I2C(PA8=SCL/PB4=SDA)是**独占**总线(线上只有
+ *       CST816T), 所以实例与配置都归本 adapter, 在 lvgl_bsp_indev_inst() 里
+ *       自己构造。只有被多器件共用的总线才需要外部提供实例: 那是 main.c 里的
+ *       `iic_instance`(PB6/PB7, MPU6050/MAX30102/AHT21 共用), 与本文件无关。
  *
  * @note 设备自身的控制脚(RST PA15 / INT PB2)由本 adapter 自己配置, 不上交 main.c:
  *       与 W25Q64/adapter 自持 CS(PB12)同一做法。本工程**没有** MX_GPIO_Init(参考工程
@@ -57,7 +54,7 @@
  *       校验中断接口非空(否则返回 -7), 且将来做低功耗要切 CST816T_READ_WAIT。
  *
  * @note 实例归属: 驱动接口结构体一律**不带实例成员**(见驱动头文件), 于是本层改用
- *       **文件静态量**兜住四个"实例"——extern 的 `touch_iic_instance`(总线)、自持的
+ *       **文件静态量**兜住四个"实例"——自持的 `touch_iic_instance`(总线)与
  *       `touch_rst_gpio`/`touch_exti`(两根控制脚)、`cst816t_sem_handle`(信号量句柄)。
  *       因此所有转发函数都不带实例形参。⚠ 形参表必须与接口结构体逐字一致: 多写一个
  *       void * 就是 -Wincompatible-function-pointer-types 编译失败(本工程里这是
@@ -66,20 +63,24 @@
 #include "cywatch_adapter_indev.h"
 
 #include "cywatch_bsp_cst816t_driver.h"
-#include "iic_hal.h"   /* iic_driver_t: 触摸专用位带 I2C, 由 main.c 提供 */
+#include "iic_hal.h"   /* iic_driver_t: 触摸专用位带 I2C, 本 adapter 自持 */
 #include "gpio_hal.h" /* gpio_driver_t: RST(PA15) */
 #include "exti_hal.h" /* exti_driver_t: INT(PB2) */
-#include "delay.h"   /* delay_us: GPIO/EXTI 驱动 inst 会校验 pf_delay_us 非空 */
-#include "main.h"                /* __HAL_RCC_GPIOx_CLK_ENABLE */
+#include "delay.h"   /* delay_us: EXTI 驱动 inst 会校验 pf_delay_us 非空 */
+#include "main.h"                /* GPIO_TypeDef / GPIO_MODE_* / GPIO_PIN_* */
 #include "cmsis_os2.h"           /* osDelay / osKernelGetTickCount / osSemaphore* */
 
 /***********************************Defines************************************/
 /* 触摸接线(用户确认, 均不在 CubeMX 纳管范围):
-   RST=PA15(GPIO), INT=PB2(EXTI2下降沿); SCL/SDA 见 main.c 的 touch_iic_instance */
+   RST=PA15(GPIO), INT=PB2(EXTI2下降沿), SCL=PA8 / SDA=PB4(独占位带 I2C) */
 #define CST816T_RST_PORT GPIOA
 #define CST816T_RST_PIN  GPIO_PIN_15
 #define CST816T_INT_PORT GPIOB
 #define CST816T_INT_PIN  GPIO_PIN_2
+#define CST816T_SCL_PORT GPIOA
+#define CST816T_SCL_PIN  GPIO_PIN_8
+#define CST816T_SDA_PORT GPIOB
+#define CST816T_SDA_PIN  GPIO_PIN_4
 
 /* EXTI 抢占优先级: 必须 >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY(5),
    因为该 ISR 内会经 pf_release 调 osSemaphoreRelease(FromISR 安全 API) */
@@ -89,8 +90,56 @@
 /**********************************Declaring***********************************/
 static bsp_cst816t_driver_t cst816t_instance;
 
-/* 应用层(main.c)提供的总线实例: 触摸独占位带 I2C(PA8=SCL/PB4=SDA) */
-extern iic_driver_t touch_iic_instance;
+/* ---- 触摸总线: 独占位带 I2C(PA8=SCL / PB4=SDA) ----
+   线上只有 CST816T 一个器件, 是一条独立总线, 所以实例与配置都归本层, 与自持的
+   RST(PA15)/INT(PB2) 同一条理。被多器件共用的总线(如 main.c 的 PB6/PB7 那条)
+   才需要外部提供实例。 */
+static iic_driver_t touch_iic_instance;
+static iic_bus_t touch_iic_bus_cfg =
+{
+	/* 初始态: 推挽输出+上拉(与 iic_hal 里 SDA 收发切换时的参数无关) */
+	.sda = { .p_port = CST816T_SDA_PORT, .pins = CST816T_SDA_PIN,
+			 .mode = GPIO_MODE_OUTPUT_PP, .pull = GPIO_PULLUP,
+			 .speed = GPIO_SPEED_FREQ_HIGH },
+	.scl = { .p_port = CST816T_SCL_PORT, .pins = CST816T_SCL_PIN,
+			 .mode = GPIO_MODE_OUTPUT_PP, .pull = GPIO_PULLUP,
+			 .speed = GPIO_SPEED_FREQ_HIGH },
+};
+static iic_delay_interface_t touch_iic_delay_instance =
+{
+	.pf_delay_us = delay_us,
+};
+
+/* 触摸总线的互斥量: 位带总线不可重入, 读事务在 lvgl 任务里按 ~33ms 周期跑,
+   一次事务(start..stop)被 tick 抢占切开会踩总线。
+   句柄归本层持有: 接口的两个回调没有形参 */
+static osMutexId_t touch_iic_mutex_handle = NULL;
+
+static int8_t touch_iic_mutex_lock(void)
+{
+	if (NULL == touch_iic_mutex_handle)
+	{
+		return -1;
+	}
+
+	return (osOK == osMutexAcquire(touch_iic_mutex_handle, osWaitForever)) ? 0 : -1;
+}
+
+static int8_t touch_iic_mutex_unlock(void)
+{
+	if (NULL == touch_iic_mutex_handle)
+	{
+		return -1;
+	}
+
+	return (osOK == osMutexRelease(touch_iic_mutex_handle)) ? 0 : -1;
+}
+
+static iic_mutex_interface_t touch_iic_mutex_instance =
+{
+	.pf_lock   = touch_iic_mutex_lock,
+	.pf_unlock = touch_iic_mutex_unlock,
+};
 
 /* 设备自身控制脚(RST/INT)的底层实例, 归本层所有 */
 static gpio_driver_t touch_rst_gpio;
@@ -115,23 +164,23 @@ static osSemaphoreId_t cst816t_sem_handle = NULL;
 static gpio_cfg_t touch_rst_gpio_cfg =
 {
 	.p_port = CST816T_RST_PORT,
-	.pin    = CST816T_RST_PIN,
+	.pins   = CST816T_RST_PIN,
 	.mode   = GPIO_MODE_OUTPUT_PP,
 	.pull   = GPIO_NOPULL,
 	.speed  = GPIO_SPEED_FREQ_LOW,
-};
-
-static gpio_delay_interface_t touch_gpio_delay_instance =
-{
-	.pf_delay_us = delay_us,
+	.af     = 0,
 };
 
 static exti_cfg_t touch_exti_cfg =
 {
-	.p_port           = CST816T_INT_PORT,
-	.pin              = CST816T_INT_PIN,
-	.mode             = GPIO_MODE_IT_FALLING,
-	.pull             = GPIO_PULLUP, /* CST816T INT 空闲高电平, 防悬空误触发 */
+	.gpio =
+	{
+		.p_port = CST816T_INT_PORT,
+		.pins   = CST816T_INT_PIN,
+		.mode   = GPIO_MODE_IT_FALLING,
+		.pull   = GPIO_PULLUP, /* CST816T INT 空闲高电平, 防悬空误触发 */
+		.speed  = GPIO_SPEED_FREQ_HIGH,
+	},
 	.irqn             = EXTI2_IRQn,
 	.preempt_priority = CST816T_INT_PREEMPT_PRIO,
 	.sub_priority     = 0,
@@ -276,7 +325,7 @@ static int8_t cst816t_sem_release(void)
 	return (osOK == osSemaphoreRelease(cst816t_sem_handle)) ? 0 : -1;
 }
 
-/* ---- I2C 转发(接口不带实例形参, 固定转发到 main.c 的 touch_iic_instance) ----
+/* ---- I2C 转发(接口不带实例形参, 固定转发到本层的 touch_iic_instance) ----
    @note iic_hal 那一侧是"带实例形参"的方言, 所以这里显式把 &touch_iic_instance
          当作它的第一个实参传下去; 本适配器只服务这一条触摸总线, 不会传别的实例 */
 
@@ -328,7 +377,7 @@ static int8_t touch_iic_writereg(uint8_t dev_addr, uint8_t reg, uint8_t data)
 
 /******************************************************************************
  * @name    cst816t_iic_init
- * @brief   I2C总线初始化: 转发到 main.c 的 touch_iic_instance
+ * @brief   I2C总线初始化: 转发到本层的 touch_iic_instance
  *
  * @return  0 success, 非0 见 iic_hal 的 pf_init
  *
@@ -342,11 +391,11 @@ static int8_t cst816t_iic_init(void)
 
 /******************************************************************************
  * @name    cst816t_iic_deinit
- * @brief   I2C总线反初始化: 转发到 main.c 的 touch_iic_instance
+ * @brief   I2C总线反初始化: 转发到本层的 touch_iic_instance
  *
  * @return  0 success, 非0 见 iic_hal 的 pf_deinit
  *
- * @note    引用计数减到 0 才真正 HAL_GPIO_DeInit 掉 PA8/PB4; 之后器件只能靠
+ * @note    引用计数减到 0 才真正把 PA8/PB4 释放成模拟输入; 之后器件只能靠
  *          RST 引脚唤醒(见 cst816t_wakeup), 要再通信必须先 pf_init 把总线开回来。
  *****************************************************************************/
 static int8_t cst816t_iic_deinit(void)
@@ -359,59 +408,47 @@ static int8_t cst816t_iic_deinit(void)
  * @brief   RST引脚(PA15)配置到运行态: 输出推挽 + 置高释放复位
  *
  * @return  0 success
+ *         -1 引脚配置失败
  *
  * @note    CST816T 低电平复位, 所以初始电平必须是高。先写 ODR 再配 MODER:
  *          输出锁存器预置成"释放复位", 引脚一变成输出就立刻是高, 不会给芯片
- *          打出一个假复位脉冲。
- *          @note 这里直接写裸 HAL, 与 touch_rst_gpio(gpio_hal)对同一根 PA15 的
- *                构造并存 —— 两者配的是同一组寄存器值, 重复执行无害; 保留
- *                touch_rst_gpio 是因为 touch_rst_set_level 还在用它写电平。
+ *          打出一个假复位脉冲(gpio_write 直写 BSRR, 输入态下也有效)。
  *****************************************************************************/
 static int8_t lvgl_bsp_indev_gpio_init(void)
 {
-	GPIO_InitTypeDef gpio = { 0 };
+	(void)touch_rst_gpio.pf_write(&touch_rst_gpio, 1);
 
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-
-	HAL_GPIO_WritePin(CST816T_RST_PORT, CST816T_RST_PIN, GPIO_PIN_SET);
-
-	gpio.Pin   = CST816T_RST_PIN;
-	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-	gpio.Pull  = GPIO_NOPULL;
-	gpio.Speed = GPIO_SPEED_FREQ_LOW;
-	HAL_GPIO_Init(CST816T_RST_PORT, &gpio);
-
-	return 0;
+	return touch_rst_gpio.pf_init(&touch_rst_gpio);
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_indev_gpio_deinit
- * @brief   释放RST引脚(PA15), 恢复复位默认态
+ * @brief   释放RST引脚(PA15), 恢复复位默认态并按低功耗收尾
  *
  * @return  0 success
+ *         -1 实例为空
  *
- * @note    不动 GPIOA 时钟: 同一端口上还挂着位带 I2C 的 SCL(PA8)、LCD 的
- *          DC/CS/SCK/MOSI/背光等, 关时钟会误伤。
+ * @note    端口时钟由 gpio_hal 统一管理且永不关闭: 同一端口上还挂着位带 I2C 的
+ *          SCL(PA8)、LCD 的 DC/CS/SCK/MOSI/背光等。
  *****************************************************************************/
 static int8_t lvgl_bsp_indev_gpio_deinit(void)
 {
-	HAL_GPIO_DeInit(CST816T_RST_PORT, CST816T_RST_PIN);
-
-	return 0;
+	return touch_rst_gpio.pf_deinit(&touch_rst_gpio);
 }
 
 /* ============================= 构造/析构 ============================= */
 
 /******************************************************************************
  * @name    lvgl_bsp_indev_inst
- * @brief   构造CST816T实例: RST GPIO → 挂六个驱动接口 → cst816t_inst → 挂EXTI回调
+ * @brief   构造CST816T实例: 总线 → RST GPIO → 挂六个驱动接口 → cst816t_inst → 挂EXTI回调
  * @param   无
  *
  * @return  0 success
- *         -1 RST GPIO 构造失败
- *         -2 EXTI 构造失败
- *         -3 信号量创建失败
- *         -4 cst816t_inst 失败(负值语义见驱动头文件 @return, -9 = ChipID自检失败)
+ *         -1 触摸总线构造失败(互斥量创建失败或 iic_driver_inst 参数非法)
+ *         -2 RST GPIO 构造失败
+ *         -3 EXTI 构造失败
+ *         -4 信号量创建失败
+ *         <0  cst816t_inst 失败, 透传驱动的返回码(负值语义见驱动头文件, -9 = ChipID自检失败)
  *
  * @note    须在 osKernelStart() 之后的任务上下文调用(内部含 osDelay);
  *          可重复调用用于失败重试——每次都会重跑 ChipID 自检
@@ -420,23 +457,46 @@ int8_t lvgl_bsp_indev_inst(void)
 {
 	int8_t ret = 0;
 
-	/* 1. RST引脚(PA15): 初始化为输出并置高释放复位(CST816T 低电平复位) */
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-	ret = gpio_driver_inst(&touch_rst_gpio, &touch_rst_gpio_cfg,
-						   &touch_gpio_delay_instance);
+	/* 0. 触摸总线(PA8/PB4): 只构造, 不碰硬件 —— 配引脚由下方 I2C 接口的 pf_init
+	      (cst816t_iic_init)在 CST816T 驱动初始化时做。
+	      互斥量只创建一次(inst 可被重试, 不能每次泄漏一个内核对象) */
+	if (NULL == touch_iic_mutex_handle)
+	{
+		touch_iic_mutex_handle = osMutexNew(NULL);
+		if (NULL == touch_iic_mutex_handle)
+		{
+			return -1;
+		}
+	}
+
+	ret = iic_driver_inst(&touch_iic_instance, &touch_iic_bus_cfg,
+						  &touch_iic_delay_instance, &touch_iic_mutex_instance);
 	if (0 != ret)
 	{
 		return -1;
 	}
-	(void)touch_rst_gpio.pf_write(&touch_rst_gpio, 1);
 
-	/* 2. EXTI中断(PB2下降沿): 触摸事件通知, ISR仅转发驱动的 pf_interrupt_cb */
-	__HAL_RCC_GPIOB_CLK_ENABLE();
+	/* 1. RST引脚(PA15): 只构造, 不碰硬件 —— 真正配引脚由下方接口的 pf_init
+	      (lvgl_bsp_indev_gpio_init)在 CST816T 驱动初始化时做 */
+	ret = gpio_driver_inst(&touch_rst_gpio, &touch_rst_gpio_cfg);
+	if (0 != ret)
+	{
+		return -2;
+	}
+
+	/* 2. EXTI中断(PB2下降沿): 触摸事件通知, ISR仅转发驱动的 pf_interrupt_cb
+	      (引脚与 GPIOB 端口时钟都由 exti 内部的 gpio 实例开, 这里不用手工开) */
 	ret = exti_driver_inst(&touch_exti, &touch_exti_cfg,
 						   &touch_exti_delay_instance);
 	if (0 != ret)
 	{
-		return -2;
+		return -3;
+	}
+
+	ret = touch_exti.pf_init(&touch_exti);
+	if (0 != ret)
+	{
+		return -3;
 	}
 
 	/* 3. 中断信号量: 只创建一次(inst 可被重试, 不能每次泄漏一个内核对象) */
@@ -445,11 +505,11 @@ int8_t lvgl_bsp_indev_inst(void)
 		cst816t_sem_handle = osSemaphoreNew(1U, 0U, NULL);
 		if (NULL == cst816t_sem_handle)
 		{
-			return -3;
+			return -4;
 		}
 	}
 
-	/* 4. 挂I2C接口(转发到 main.c 的 touch_iic_instance) */
+	/* 4. 挂I2C接口(转发到本层的 touch_iic_instance) */
 	cst816t_iic_interface_instance.pf_init          = cst816t_iic_init;
 	cst816t_iic_interface_instance.pf_deinit        = cst816t_iic_deinit;
 	cst816t_iic_interface_instance.pf_start         = touch_iic_start;

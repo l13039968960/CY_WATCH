@@ -26,6 +26,8 @@
 typedef enum{
     EVT_HUMITURE_INIT = 0,
     EVT_HUMITURE_MEASURE,
+    EVT_HUMITURE_SLEEP,
+    EVT_HUMITURE_SLEEPING,
     EVT_HUMITURE_ERROR,
 }State_Humiture_Service_t;
 
@@ -44,5 +46,11 @@ typedef struct Humiture_Data
  * @return 无
  */
 void service_humiture_init(void);
+
+/* 休眠/唤醒: AHT21 软复位并释放共享 I2C 上本设备那一份占用.
+ * 只置状态位, 服务任务在本轮 osDelay(最长 SERVICE_HUMITURE_PERIOD_MS)结束后
+ * 的下一次 switch 才真正睡下; 唤醒走 EVT_HUMITURE_INIT 重走一遍构造 */
+void service_humiture_sleep(void);
+void service_humiture_wakeup(void);
 
 #endif // __CYWATCH_SERVICE_HUMITURE_H__

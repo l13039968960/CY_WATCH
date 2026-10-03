@@ -19,8 +19,9 @@
  * Processing flow:
  *
  * storage_bsp_w25q64_inst():
- *   填三个接口(SPI 的 pf_init/pf_deinit 转发到 spi2_instance; GPIO 的 pf_init 配
- *   CS=PB12; delay 走 osDelay) → w25q64_inst()
+ *   装配 CS=PB12 的 gpio 实例 → 填三个接口(SPI 的 pf_init/pf_deinit 转发到
+ *   spi2_instance; GPIO 的 pf_init/pf_deinit/pf_cs_set 走那个 gpio 实例;
+ *   delay 走 osDelay) → w25q64_inst()
  *   (驱动内部回调 gpio/spi 的 pf_init, 再做芯片初始化 + 读 JEDEC ID 自检 0xEF/0x40/0x17);
  * 之后即可用 read/write/erase_* 转发到驱动的 pf_*.
  *
@@ -31,7 +32,7 @@
  * @note 总线归属: SPI2(PB13=SCK/PB14=MISO/PB15=MOSI)实例 `spi2_instance` 由应用层
  *       main.c 创建, 本 adapter 只 extern 引用(与 ST7789T3 adapter 引用
  *       `lcd_spi_instance` 同一写法), 不自己再建总线. CS=PB12 是普通 GPIO,
- *       由本层的 pf_cs_set 直接驱动.
+ *       由本 adapter 自己的 gpio 实例驱动(pf_cs_set).
  *
  * @note `storage_bsp_w25q64_inst()` 内含 osDelay(芯片上电等待与 wait_busy 轮询) →
  *       必须在 osKernelStart() 之后的**任务上下文**调用, 不能放在 main 启动内核之前.
@@ -43,7 +44,7 @@
  *
  * @note 与参考工程 Dirver_Test 的差异(两处必补, 否则芯片一个字节都不应答):
  *       1. CS(PB12) 的 GPIO 配置 —— 参考工程由 gpio.c 的 MX_GPIO_Init 代劳,
- *          本工程**没有**该函数, 见 w25q64_cs_gpio_init 的 @note;
+ *          本工程**没有**该函数, 改由 gpio 驱动配, 见 w25q64_cs_gpio_init 的 @note;
  *       2. SPI2 外设初始化 —— 参考工程里 SPI2 从未真正初始化过(main.c 里的
  *          `spi_driver_t spi2_instance;` 是个全零桩, 只为满足链接器),
  *          本工程由本层的 spi pf_init 转发到 spi2_instance.pf_init 补上,
@@ -60,17 +61,33 @@
 /* CS 引脚: PB12 推挽输出, 低有效 */
 #define W25Q64_CS_PORT  GPIOB
 #define W25Q64_CS_PIN   GPIO_PIN_12
+
+/* 收多少字节以上才值得起一次 DMA. 取 64: 64B@25MHz ≈ 20us 的传输量,
+   低于它的都是命令/状态/ID 这类碎片(1~4B), 走阻塞更快 */
+#define W25Q64_SPI_DMA_THRESHOLD  64U
 /***********************************Defines************************************/
 
 /**********************************Declaring***********************************/
 static bsp_w25q64_driver_t w25q64_instance;
 
-/* 应用层(main.c)提供的总线实例: W25Q64 独占 SPI2 + CS(PB12), 不用 DMA */
+/* 应用层(main.c)提供的总线实例: W25Q64 独占 SPI2 + CS(PB12),
+   大块接收走 DMA(见 w25q64_spi_receive_bytes) */
 extern spi_driver_t spi2_instance;
 
 static w25q64_spi_interface_t   w25q64_spi_interface_instance;
 static w25q64_gpio_interface_t  w25q64_gpio_interface_instance;
 static w25q64_delay_interface_t w25q64_delay_instance;
+
+/* CS(PB12) 的引脚实例: 普通IO, 不属于 SPI 的信号线, 所以放在本 adapter 里 */
+static gpio_driver_t w25q64_cs_gpio;
+static gpio_cfg_t w25q64_cs_gpio_cfg =
+{
+	.p_port = W25Q64_CS_PORT,
+	.pins   = W25Q64_CS_PIN,
+	.mode   = GPIO_MODE_OUTPUT_PP,
+	.pull   = GPIO_NOPULL,
+	.speed  = GPIO_SPEED_FREQ_VERY_HIGH,
+};
 
 /******************************************************************************
  * @name    w25q64_spi_init
@@ -111,7 +128,8 @@ static int8_t w25q64_spi_deinit(void)
  * @brief   CS(PB12)配置成推挽输出, 空闲拉高(gpio 接口的 pf_init)
  * @param   无
  *
- * @return  0 success (本函数不做失败判定, 恒返回 0)
+ * @return  0 success
+ *         -1 gpio 实例空 / -3 端口空(常量端口, 实际不会发生)
  *
  * @note    参考工程里这步由 MX_GPIO_Init(gpio.c) 代劳, 本工程**没有** MX_GPIO_Init
  *          —— 参考工程 Core/Src/gpio.c 里那个函数在迁移时没搬进来, main.c 的调用点
@@ -129,36 +147,25 @@ static int8_t w25q64_spi_deinit(void)
  *****************************************************************************/
 static int8_t w25q64_cs_gpio_init(void)
 {
-	GPIO_InitTypeDef gpio = { 0 };
+	(void)w25q64_cs_gpio.pf_write(&w25q64_cs_gpio, 1);
 
-	__HAL_RCC_GPIOB_CLK_ENABLE();
-
-	HAL_GPIO_WritePin(W25Q64_CS_PORT, W25Q64_CS_PIN, GPIO_PIN_SET);
-
-	gpio.Pin   = W25Q64_CS_PIN;
-	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-	gpio.Pull  = GPIO_NOPULL;
-	gpio.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-	HAL_GPIO_Init(W25Q64_CS_PORT, &gpio);
-
-	return 0;
+	return w25q64_cs_gpio.pf_init(&w25q64_cs_gpio);
 }
 
 /******************************************************************************
  * @name    w25q64_gpio_deinit
- * @brief   释放 CS(PB12), 恢复复位默认态(gpio 接口的 pf_deinit)
+ * @brief   释放 CS(PB12), 置低功耗态模拟输入(gpio 接口的 pf_deinit)
  * @param   无
  *
  * @return  0 success
+ *         -1 gpio 实例空
  *
  * @note    不动 GPIOB 的端口时钟: 同一端口上还挂着 SPI2 的 PB13/14/15,
  *          关时钟会误伤(与 ST7789T3 adapter 的 gpio_deinit 同一考虑)
  *****************************************************************************/
 static int8_t w25q64_gpio_deinit(void)
 {
-	HAL_GPIO_DeInit(W25Q64_CS_PORT, W25Q64_CS_PIN);
-
-	return 0;
+	return w25q64_cs_gpio.pf_deinit(&w25q64_cs_gpio);
 }
 
 /******************************************************************************
@@ -184,10 +191,7 @@ static void w25q64_delay_cb(uint32_t ms)
  *****************************************************************************/
 static int8_t w25q64_cs_set(uint8_t level)
 {
-	HAL_GPIO_WritePin(W25Q64_CS_PORT, W25Q64_CS_PIN,
-					  (0 == level) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-
-	return 0;
+	return w25q64_cs_gpio.pf_write(&w25q64_cs_gpio, (0U == level) ? 0U : 1U);
 }
 
 /* ============================= 驱动接口转发 ============================= */
@@ -215,16 +219,28 @@ static int8_t w25q64_spi_send_bytes(uint8_t *pdata, uint32_t size)
 
 /******************************************************************************
  * @name    w25q64_spi_receive_bytes
- * @brief   阻塞接收字节流(数据/状态/ID)
+ * @brief   接收字节流: 大块走DMA, 小块走阻塞
  * @param   pdata[in] 接收缓冲
  * @param   size[in]  字节数
  *
  * @return  0 success
  *         -1 spi instance null
- *         -2 HAL 接收失败
+ *         -2 HAL 接收失败 / -5 DMA 等待超时
+ *
+ * @note    必须按长度分派, 不能无条件走 DMA: w25q64_read_status_register(1B) 在
+ *          w25q64_wait_busy_timeout 的忙等里会被轮询上千次(擦除/编程期间),
+ *          每次 DMA 的建流+中断+信号量切换开销远超那 1 个字节本身。
+ *          真正的大块只有 w25q64_read 的数据段, FatFS 侧上限 61440B。
+ * @note    size 上限不是问题: pf_receive 的 256B scratch 限制只在阻塞路径,
+ *          DMA 路径直接落到调用方的缓冲上。
  *****************************************************************************/
 static int8_t w25q64_spi_receive_bytes(uint8_t *pdata, uint32_t size)
 {
+	if (size >= W25Q64_SPI_DMA_THRESHOLD)
+	{
+		return spi2_instance.pf_receive_dma(&spi2_instance, pdata, size);
+	}
+
 	return spi2_instance.pf_receive(&spi2_instance, pdata, size);
 }
 
@@ -241,13 +257,19 @@ static int8_t w25q64_spi_receive_bytes(uint8_t *pdata, uint32_t size)
  *         -8 JEDEC ID 自检不通过(芯片没接、接线错、供电不足、或 CS 没配)
  *
  * @note    须在 osKernelStart() 之后的任务上下文调用(内部 osDelay);
- *          SPI2 的 PB13/14/15 由 spi_hal 的 HAL_SPI_MspInit 配置, 调用方不要再调 MX_SPI2_Init
+ *          SPI2 的时钟/PB13/14/15/两条DMA流都由 spi_hal 的 pf_init 配, 调用方不要再动
  * @note    初始化顺序(GPIO → SPI)与"为什么要这个顺序"都写在驱动的 w25q64_init 里,
  *          本层只把两个函数挂上
  *****************************************************************************/
 int8_t storage_bsp_w25q64_inst(void)
 {
-	/* 1. 挂三个接口(每个都对应驱动 w25q64_inst 的一处非空校验) */
+	/* 1. 装配 CS 引脚实例(不碰硬件, 真正配置在驱动回调的 pf_init 里) */
+	if (0 != gpio_driver_inst(&w25q64_cs_gpio, &w25q64_cs_gpio_cfg))
+	{
+		return -3; /* 端口空, 常量端口实际不会发生 */
+	}
+
+	/* 2. 挂三个接口(每个都对应驱动 w25q64_inst 的一处非空校验) */
 	w25q64_spi_interface_instance.pf_init          = w25q64_spi_init;
 	w25q64_spi_interface_instance.pf_deinit        = w25q64_spi_deinit;
 	w25q64_spi_interface_instance.pf_send_bytes    = w25q64_spi_send_bytes;
@@ -259,7 +281,7 @@ int8_t storage_bsp_w25q64_inst(void)
 
 	w25q64_delay_instance.pf_delay                 = w25q64_delay_cb;
 
-	/* 2. 构造驱动: 内部先回调 gpio/spi 的 pf_init, 再做芯片初始化 + 读 JEDEC ID
+	/* 3. 构造驱动: 内部先回调 gpio/spi 的 pf_init, 再做芯片初始化 + 读 JEDEC ID
 	      自检(0xEF/0x40/0x17), 失败即在此返回 */
 	return w25q64_inst(&w25q64_instance,
 					   &w25q64_spi_interface_instance,

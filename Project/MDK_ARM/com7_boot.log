@@ -1,0 +1,25 @@
+[RTC] init ok(LSE 起振正常, 表盘页有真实日期/时钟)
+[PWM] init ok(TIM4_CH3/CH4 @ PB8/PB9, 1000Hz, CH3/CH4 = 50%)
+[LVGL] service init ok("lvgl" 任务已建; lv_init/显示/触摸/UI 在任务体内做)
+[LVGL] 预期: 屏幕亮起并显示表盘页, 可左右/下滑切页
+[FATFS] service init ok("fatfs" 任务已建; 挂载/自检在任务体内做)
+[KEY] service init ok("key" 任务已建; ADKEY 构造/轮询在任务体内做)
+[NORDIC] service init ok("nordic_rx"/"nordic_tx" 任务已建)
+[ATTITUDE] service init ok("attitude" 任务已建; MPU6050 构造在任务体内做)
+[HEARTRATE] service init ok("heartrate" 任务已建; MAX30102 构造在任务体内做)
+[HUMITURE] service init ok("humiture" 任务已建; AHT21 构造在任务体内做)
+[FLAGS] service init ok("flags" 任务已建; AT24C02 构造在任务体内做)
+[FS] 挂载成功
+
+===== FatFs 自检开始(介质: W25Q64 8MB @SPI2, 扇区 512B, 擦除块 4096B) =====
+[FS] 1. 写文件        PASS: selftest.txt, 9216 B
+[FS] 2. 读回校验      PASS: 9216 B 逐字节一致
+[FS] 3. f_stat        PASS: size=9216 属性=0x20 时间=5A21/031A
+[FS] 4. f_getfree     PASS: 总 8140 KB / 空闲 8104 KB (卷型=FAT12, 簇=2035 个 x 4096 B, 扇区=512 B)
+[FS] 5. 中文长文件名  PASS: 目录测试.txt
+[FS] 6. 根目录列表:
+        selftest.txt                 9216 B  attr=0x20
+        目录测试.txt             9216 B  attr=0x20
+[FS] 7. 栈余量        2460 B / 4608 B (全流程高水位)
+[FS] ===== 自检结束: 文件系统 PASS | 中文长文件名 PASS =====
+

@@ -449,6 +449,11 @@ static int8_t cst816t_deinit(struct bsp_cst816t_driver *p_cst816t_instance)
 		return -1;
 	}
 
+	/* 先关触摸中断(器件 IrqCtl + 底层 EXTI)再进深度休眠: 睡下之后器件停止响应
+	   I2C, 那句 IrqCtl 就再也写不出去了。与 pf_hibernating 同构,
+	   唤醒侧的刻意不 enable 见 pf_hibernating 的说明 */
+	(void)p_cst816t_instance->pf_disable_interrupt(p_cst816t_instance);
+
 	/* 进入深度休眠, 关闭扫描以降低功耗 */
 	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,
 							CST816T_SLEEP_MODE,
@@ -714,6 +719,12 @@ static int8_t cst816t_hibernating(struct bsp_cst816t_driver *p_cst816t_instance)
 	{
 		return -1;
 	}
+
+	/* 先关触摸中断(器件 IrqCtl + 底层 EXTI)再进深度休眠: 睡下之后器件停止响应
+	   I2C, 那句 IrqCtl 就再也写不出去了。
+	   ★唤醒侧刻意不 enable★: LVGL 走轮询(CST816T_READ_POLL), EXTI2(PB2) 本来就
+	   一直是"已配好但没使能"的备用路径, 这里只负责别让它漏开着 */
+	(void)p_cst816t_instance->pf_disable_interrupt(p_cst816t_instance);
 
 	/* 进入深度休眠 */
 	ret = p_cst816t_instance->p_iic_interface->pf_writereg(CST816T_I2C_ADDR,

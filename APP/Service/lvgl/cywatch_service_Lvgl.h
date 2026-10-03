@@ -53,6 +53,14 @@
  *
  * 返回 0 success; -1 任务创建失败 */
 int8_t service_lvgl_init(void);
+
+/* 休眠/唤醒: 显示(ST7789)与触摸(CST816T)一起睡、一起醒(屏一 SLEEP, UI 泵
+ * 就不能再跑, 拆开只会得到不一致态). 只置状态位, 真正动作在 lvgl 任务里做,
+ * 最慢一个空转节拍后生效. 唤醒会强制整屏重绘.
+ *
+ * 返回无; 设备层失败只影响该设备, 不改变状态机走向(与 pf_sleep/pf_wakeup 同) */
+void service_lvgl_sleep(void);
+void service_lvgl_wakeup(void);
 /**********************************Declaring***********************************/
 
 #endif // __CYWATCH_SERVICE_LVGL_H__

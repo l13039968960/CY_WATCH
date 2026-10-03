@@ -30,6 +30,7 @@
 #include "spi_hal.h"                /* LCD 的 SPI1 总线 */
 #include "iic_hal.h"                /* 触摸的位带 I2C 总线 */
 #include "exti_hal.h"               /* exti_driver_t (MAX30102 INT 的占位实例用) */
+#include "pwm_hal.h"                /* TIM4 CH3/CH4 (PB8/PB9) 的两路 PWM */
 #include "cywatch_rtc.h"            /* 表盘页的日期/时钟来源 */
 #include "cywatch_service_lvgl.h"   /* service_lvgl_init() */
 #include "cywatch_service_fatfs.h"  /* service_fatfs_init() */
@@ -38,6 +39,7 @@
 #include "cywatch_service_AttitudeCalculation.h" /* service_attitudecalculation_init() */
 #include "cywatch_service_HeartRate.h"      /* service_heartrate_init() */
 #include "cywatch_service_humiture.h"       /* service_humiture_init() */
+#include "cywatch_service_flags.h"          /* service_flags_init() */
 #include "cywatch_adapter_mpu6050.h"        /* attitudecalculation_bsp_*() (自检用) */
 #include "cywatch_adapter_max30102.h"       /* heartrate_bsp_*() (自检/EXTI 回调用) */
 #include "cmsis_os2.h"              /* osKernelInitialize / osKernelStart / osSemaphoreNew */
@@ -79,10 +81,9 @@
    @note PB4 复位后是 NJTRST: 当普通 GPIO 用会占掉 JTAG 的复位脚, SWD(PA13/PA14)
          不受影响, 调试器按 SW-DP(SWD) 连接即可 */
 
-/* SPI1 TX DMA 句柄由 stm32f4xx_hal_msp.c 定义(引脚/DMA/NVIC 在 HAL_SPI_MspInit 里配) */
-extern DMA_HandleTypeDef hdma_spi1_tx;
-
 /* ---- LCD: SPI1 总线实例 ----
+   SPI1 的时钟/引脚/DMA 全在 spi_hal 的 pf_init 里配(不走 MSP), 所以下面 cfg
+   要把 GPIO 与两条 DMA 流的描述都填齐。
    参数与 CubeMX 生成的 MX_SPI1_Init() 逐项一致(Mode0, /2 → APB2 100MHz/2 = 50MHz)。 */
 spi_driver_t lcd_spi_instance; /* 非 static: adapter 内 extern 引用 */
 static spi_cfg_t lcd_spi_cfg =
@@ -102,8 +103,34 @@ static spi_cfg_t lcd_spi_cfg =
         .CRCCalculation    = SPI_CRCCALCULATION_DISABLE,
         .CRCPolynomial     = 10,
     },
-    .p_hdma_tx       = &hdma_spi1_tx, /* 像素数据分块 DMA 发送 */
     .tx_timeout_tick = 200,           /* 仅裸机路径用; OS 路径的超时由信号量给 */
+
+    .gpio =
+    {
+        .p_port = GPIOA,
+        .pins   = LCD_SCL_Pin | LCD_SDA_Pin, /* PA5=SCK / PA7=MOSI */
+        .mode   = GPIO_MODE_AF_PP,
+        .pull   = GPIO_NOPULL,
+        .speed  = GPIO_SPEED_FREQ_VERY_HIGH, /* 50MHz, 引脚翻转要跟上 */
+        .af     = GPIO_AF5_SPI1,
+    },
+
+    /* TX: DMA2_Stream3_Channel3, 像素数据分块发送 */
+    .dma_tx =
+    {
+        .p_stream          = DMA2_Stream3,
+        .channel           = DMA_CHANNEL_3,
+        .irqn              = DMA2_Stream3_IRQn,
+        .direction         = DMA_MEMORY_TO_PERIPH,
+        .mode              = DMA_NORMAL,
+        .priority          = DMA_PRIORITY_LOW, /* 流之间的总线仲裁 */
+        .nvic_priority     = 5,                /* 须 ≥ configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY */
+    },
+    /* RX: 面板只接 MOSI, 不收 —— p_stream 为 NULL 表示不建这条流 */
+    .dma_rx =
+    {
+        .p_stream          = NULL,
+    },
 };
 static spi_delay_interface_t lcd_spi_delay_instance =
 {
@@ -157,56 +184,11 @@ static spi_semaphore_interface_t lcd_spi_semaphore_instance =
     .pf_release = lcd_spi_sem_release,
 };
 
-/* ---- 触摸: 独立位带 I2C 总线实例(PA8=SCL, PB4=SDA) ----
-   ⚠ 它是一条独立总线, 不与任何别的设备共用: CST816T 的读事务在 lvgl 任务里按
-     ~33ms 周期跑, 若与别的设备共用同一条不可重入的位带总线, 就会被 tick 抢占切在
-     start..stop 事务中间而互相踩总线 */
-iic_driver_t touch_iic_instance; /* 非 static: adapter 内 extern 引用 */
-static iic_bus_t touch_iic_bus_instance =
-{
-    .p_sda_port = GPIOB,
-    .sda_pin    = GPIO_PIN_4,
-    .p_scl_port = GPIOA,
-    .scl_pin    = GPIO_PIN_8,
-};
-static iic_delay_interface_t touch_iic_delay_instance =
-{
-    .pf_delay_us = delay_us,
-};
-
-/* 触摸 I2C 的互斥量: 位带总线不可重入, 一次事务(start..stop)被 tick 抢占切开会踩总线。
-   句柄归本文件持有(理由同 lcd_spi_sem_handle): 接口的两个回调没有形参 */
-static osMutexId_t touch_iic_mutex_handle = NULL;
-
-static int8_t touch_iic_mutex_lock(void)
-{
-    if (NULL == touch_iic_mutex_handle)
-    {
-        return -1;
-    }
-
-    return (osOK == osMutexAcquire(touch_iic_mutex_handle, osWaitForever)) ? 0 : -1;
-}
-
-static int8_t touch_iic_mutex_unlock(void)
-{
-    if (NULL == touch_iic_mutex_handle)
-    {
-        return -1;
-    }
-
-    return (osOK == osMutexRelease(touch_iic_mutex_handle)) ? 0 : -1;
-}
-
-static iic_mutex_interface_t touch_iic_mutex_instance =
-{
-    .pf_lock   = touch_iic_mutex_lock,
-    .pf_unlock = touch_iic_mutex_unlock,
-};
-
 /* ---- W25Q64: SPI2 总线实例 ----
-   W25Q64 独占 SPI2(PB13=SCK/PB14=MISO/PB15=MOSI) + CS(PB12), 不走 DMA:
-   读写都是阻塞传输(spi_hal 的 pf_transmit / pf_receive, 单次最长 256B 页编程)。
+   W25Q64 独占 SPI2(PB13=SCK/PB14=MISO/PB15=MOSI) + CS(PB12)。
+   小传输走阻塞接口(pf_transmit / pf_receive), 大块接收走 pf_receive_dma ——
+   按字节数分派, 见 adapter 的 w25q64_spi_receive_bytes。命令与状态轮询都是几字节,
+   单独为它们起一次 DMA 不划算。
    参数与 CubeMX 会生成的 MX_SPI2_Init() 逐项一致, Mode0。
    @note 速率只能到 25MHz, 不是 50MHz: SPI2 挂 APB1(本工程 APB1 = 50MHz), 而 STM32 的
          SPI 波特率预分频**最小就是 /2**(BR 位域 000, HAL 里根本没有
@@ -231,18 +213,54 @@ static spi_cfg_t w25q64_spi_cfg =
         .CRCCalculation    = SPI_CRCCALCULATION_DISABLE,
         .CRCPolynomial     = 10,
     },
-    .p_hdma_tx       = NULL, /* W25Q64 不使用 DMA 发送 */
-    .tx_timeout_tick = 0,    /* 仅裸机 DMA 路径用; 本总线不发 DMA */
+    .tx_timeout_tick = 0,    /* 仅裸机 DMA 路径用; OS 路径的超时由信号量给 */
+
+    .gpio =
+    {
+        .p_port = GPIOB,
+        .pins   = GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15, /* PB13=SCK/PB14=MISO/PB15=MOSI */
+        .mode   = GPIO_MODE_AF_PP,
+        .pull   = GPIO_NOPULL,
+        .speed  = GPIO_SPEED_FREQ_VERY_HIGH, /* 25MHz */
+        .af     = GPIO_AF5_SPI2,
+    },
+
+    /* ★收发两条流都必须建★: 全双工主模式下 HAL_SPI_Receive_DMA 会转调
+       HAL_SPI_TransmitReceive_DMA, 后者解引用 hspi->hdmatx, 只配 RX 会 HardFault。
+       发送侧的哑字节走 TX 流, SCLK 由它带出来 —— 不建 RX 也收不到时钟。
+       TX = DMA1_Stream4_Ch0 / RX = DMA1_Stream3_Ch0 (RM0383 Table 27)。
+       DMA1 的八条流此前全空闲, 时钟由 dma_hal 在装配流时打开 */
+    .dma_tx =
+    {
+        .p_stream          = DMA1_Stream4,
+        .channel           = DMA_CHANNEL_0,
+        .irqn              = DMA1_Stream4_IRQn,
+        .direction         = DMA_MEMORY_TO_PERIPH,
+        .mode              = DMA_NORMAL,
+        .priority          = DMA_PRIORITY_LOW, /* 流之间的总线仲裁: DMA1 上只有这两条流 */
+        .nvic_priority     = 6,                /* 须 ≥ configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY */
+    },
+    .dma_rx =
+    {
+        .p_stream          = DMA1_Stream3,
+        .channel           = DMA_CHANNEL_0,
+        .irqn              = DMA1_Stream3_IRQn,
+        .direction         = DMA_PERIPH_TO_MEMORY,
+        .mode              = DMA_NORMAL,
+        .priority          = DMA_PRIORITY_LOW,
+        .nvic_priority     = 6,
+    },
 };
 static spi_delay_interface_t w25q64_spi_delay_instance =
 {
     .pf_delay_us = delay_us,
 };
 
-/* W25Q64 的 SPI2 信号量: 当前**无人等待** —— W25Q64 走阻塞传输(pf_transmit /
-   pf_receive), 只有 pf_transmit_dma 才会等信号量, 而本总线不发 DMA。
-   之所以仍然要建: spi_driver_inst 强制要求 pf_wait/pf_release 非空(否则返回 -4),
-   这是接口契约, 不是可选装饰。将来若 W25Q64 改走 DMA(大块读), 这对回调直接可用。 */
+/* W25Q64 的 SPI2 信号量: 现在**真的有人等了** —— w25q64_spi_receive_bytes 在
+   大块接收时走 pf_receive_dma, 完成回调 HAL_SPI_RxCpltCallback 释放本信号量。
+   超时余量: 单次最大 60KB @25MHz ≈ 20ms, 200ms 是十倍。超时同样清迟到令牌,
+   理由与 lcd_spi_sem_wait 一致(工程没有 HAL_SPI_ErrorCallback, 出错时完成回调
+   永不到来, 只能靠超时兜底)。 */
 #define W25Q64_SPI_TX_TIMEOUT_MS   (200u)
 static osSemaphoreId_t w25q64_spi_sem_handle = NULL;
 
@@ -263,7 +281,8 @@ static int8_t w25q64_spi_sem_wait(void)
     return 0;
 }
 
-/* 由 HAL_SPI_TxCpltCallback(DMA 中断上下文)调用: 只释放信号量 */
+/* 由 HAL_SPI_RxCpltCallback(DMA 中断上下文)调用: 只释放信号量 ——
+   本总线只做 DMA 接收, 发送侧的完成回调在 TransmitReceive 路径里被置 NULL */
 static int8_t w25q64_spi_sem_release(void)
 {
     if (NULL == w25q64_spi_sem_handle)
@@ -280,19 +299,21 @@ static spi_semaphore_interface_t w25q64_spi_semaphore_instance =
     .pf_release = w25q64_spi_sem_release,
 };
 
-/* ---- MPU6050 / MAX30102 共用的位带 I2C(SCL=PB6, SDA=PB7) ----
-   两个 adapter 在文件内 `extern iic_driver_t iic_instance;`, 不给定义就链接失败。
+/* ---- MPU6050 / MAX30102 / AHT21 共用的位带 I2C(SCL=PB6, SDA=PB7) ----
+   三个 adapter 在文件内 `extern iic_driver_t iic_instance;`, 不给定义就链接失败。
+   ★ 全工程只有这条总线被多个器件共用, 所以只有它需要由外部(main.c)持有 ——
+     独占总线(CST816T 的 PA8/PB4、AT24C02 的 PB10/PB3)的实例和锁都归各自的 adapter。
    ★ 这条总线被姿态(10ms 周期)与心率(突发)两个任务共用, 而位带 iic_hal 不可重入
      —— 所以它必须注入互斥量, 由 pf_readreg/pf_writereg 整段持锁。
    @warning 本轮只搭总线, 不建任务: 没有任何代码路径会发起事务。
             谁要接服务, 得自己补任务与 adapter 的 bsp_inst()。 */
-iic_driver_t  iic_instance;            /* MPU6050 + MAX30102 共用的软 I2C */
+iic_driver_t  iic_instance;            /* MPU6050 + MAX30102 + AHT21 共用的软 I2C */
 static iic_bus_t iic_bus_instance =
 {
-    .p_sda_port = GPIOB,
-    .sda_pin    = GPIO_PIN_7,
-    .p_scl_port = GPIOB,
-    .scl_pin    = GPIO_PIN_6,
+    .sda = { .p_port = GPIOB, .pins = GPIO_PIN_7, .mode = GPIO_MODE_OUTPUT_PP,
+             .pull = GPIO_PULLUP, .speed = GPIO_SPEED_FREQ_HIGH },
+    .scl = { .p_port = GPIOB, .pins = GPIO_PIN_6, .mode = GPIO_MODE_OUTPUT_PP,
+             .pull = GPIO_PULLUP, .speed = GPIO_SPEED_FREQ_HIGH },
 };
 static iic_delay_interface_t iic_delay_instance =
 {
@@ -328,29 +349,6 @@ static iic_mutex_interface_t iic_mutex_instance =
     .pf_unlock = iic_mutex_unlock,
 };
 
-/* ---- AT24C02 独占的位带 I2C(SCL=PB10, SDA=PB3) ----
-   adapter 在文件内 `extern iic_driver_t at24c02_iic_instance;`, 不给定义就链接失败。
-   @note 线上只有 AT24C02 一个器件, 且当前没有任务访问它 —— 按 iic_hal 的
-         "单任务独占总线可省锁"约定, 建这条总线时不注入互斥量(p_mutex_interface 传
-         NULL)。将来若有多任务读写, 必须照 iic_instance 那条补上互斥量, 否则位带
-         时序会被 tick 切在 start..stop 中间。
-   @note PB3 复位后是 JTDO: 写 GPIO_MODER 就能释放为普通 GPIO, F4 不需要 SYSCFG
-         重映射; 代价是丢掉 JTAG 的 JTDO/SWO 跟踪, SWD(PA13/PA14)不受影响。
-   @warning 本轮只搭总线, 不建任务: 没有任何代码路径会发起事务, 也没有人调
-            storage_bsp_at24c02_inst()。谁要接服务, 得自己补任务与 bsp_inst()。 */
-iic_driver_t  at24c02_iic_instance;    /* AT24C02 独占的软 I2C */
-static iic_bus_t at24c02_iic_bus_instance =
-{
-    .p_sda_port = GPIOB,
-    .sda_pin    = GPIO_PIN_3,
-    .p_scl_port = GPIOB,
-    .scl_pin    = GPIO_PIN_10,
-};
-static iic_delay_interface_t at24c02_iic_delay_instance =
-{
-    .pf_delay_us = delay_us,
-};
-
 /* ---- MAX30102 INT(PA3/EXTI3): FIFO 满(下降沿)通知 ----
    @note 配置照触摸那条链(CST816T INT PB2)写; 抢占优先级 6 >= configLIBRARY_
          MAX_SYSCALL_INTERRUPT_PRIORITY(5) —— ISR 里要调 osSemaphoreRelease。
@@ -358,10 +356,14 @@ static iic_delay_interface_t at24c02_iic_delay_instance =
 #define MAX30102_INT_PREEMPT_PRIO   6
 static exti_cfg_t max30102_exti_cfg =
 {
-    .p_port           = GPIOA,
-    .pin              = GPIO_PIN_3,
-    .mode             = GPIO_MODE_IT_FALLING,
-    .pull             = GPIO_PULLUP, /* INT 空闲高电平, 防悬空误触发 */
+    .gpio =
+    {
+        .p_port = GPIOA,
+        .pins   = GPIO_PIN_3,
+        .mode   = GPIO_MODE_IT_FALLING,
+        .pull   = GPIO_PULLUP, /* INT 空闲高电平, 防悬空误触发 */
+        .speed  = GPIO_SPEED_FREQ_HIGH,
+    },
     .irqn             = EXTI3_IRQn,
     .preempt_priority = MAX30102_INT_PREEMPT_PRIO,
     .sub_priority     = 0,
@@ -379,6 +381,50 @@ static void max30102_exti_cb(void *p_ctx)
 }
 
 exti_driver_t max30102_exti_instance; /* 非 static: adapter 内 extern 引用 */
+
+/* ---- PWM: TIM4 的 CH3/CH4(PB8 / PB9) ----
+   @note ★一个实例管 TIM4 的全部通道★: 同一定时器的各通道共享时基(PSC/ARR),
+         所以 CH3/CH4 必然同频, 只能各自调占空比。要两路不同频得用两个定时器,
+         而 TIM5 已被 rtstats 占用。
+   @note TIM4 挂 APB1(本工程 APB1 = 50MHz): 该预分频≠1 时定时器时钟 = PCLK1×2
+         = 100MHz, 即下面 cfg 里的 tim_clock_hz。这个数由调用方算好写进来,
+         驱动不去猜"本定时器挂在哪条总线上"。
+   @note 构造与 init 都放在 osKernelStart() 之前: HAL_TIM_PWM_Init/Start 是纯寄存器
+         操作, 无中断、无 osDelay, 不像 SPI/ADC 那样要等调度器。
+   @note ★不走 ST 的 MSP★: TIM 的时钟与 PB8/PB9 的复用配置都在驱动的 pf_init
+         里做, stm32f4xx_hal_msp.c 里**没有** HAL_TIM_PWM_MspInit。引脚交给
+         gpio_hal, 所以下面 cfg 的 gpio.pins/af 必须给全, 少一个引脚就不会被配成
+         复用(示波器上什么也量不到)。
+   @warning 本轮只到驱动, 没有消费者: PB8/PB9 上真的在出波形, 但没有任何任务会去调
+            pf_set_duty —— 谁要接服务(振动马达/蜂鸣器), 自己补 adapter 与服务。
+   @note 频率只在 pf_init 时定死(cfg.freq_hz), 本层没有运行中改频的接口: 于是
+         pf_set_duty 只剩两次独立写(CCR + 一个字节), 天然线程安全, 不需要锁。
+         将来真要动态调频, 那段"读改写 ARR 再刷各通道 CCR"必须整体加互斥。 */
+pwm_driver_t pwm_instance; /* 本轮无 adapter, 仍留非 static 方便将来服务直接 extern */
+static pwm_cfg_t pwm_cfg =
+{
+	.p_tim_base = TIM4,
+	.init =
+	{
+		.CounterMode       = TIM_COUNTERMODE_UP,
+		.ClockDivision     = TIM_CLOCKDIVISION_DIV1,
+		.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE,
+		/* Prescaler/Period 留 0: 由驱动按 freq_hz 重算后覆盖 */
+	},
+	.tim_clock_hz = 100000000U,                /* APB1 50MHz × 2 */
+	.freq_hz      = 1000U,                     /* 1kHz: 马达/背光/无源蜂鸣器通吃的起点 */
+	.channels     = PWM_CHANNEL_3 | PWM_CHANNEL_4,
+	.duty_percent = { 0U, 0U, 50U, 50U },      /* CH3/CH4 各 50% */
+	.gpio =
+	{
+		.p_port = GPIOB,                     /* PB8=TIM4_CH3 / PB9=TIM4_CH4 */
+		.pins   = GPIO_PIN_8 | GPIO_PIN_9,
+		.mode   = GPIO_MODE_AF_PP,
+		.pull   = GPIO_NOPULL,
+		.speed  = GPIO_SPEED_FREQ_LOW,
+		.af     = GPIO_AF2_TIM4,
+	},
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -614,39 +660,17 @@ int main(void)
 		Error_Handler(); /* SPI1 配置非法(基地址/信号量/延时) */
 	}
 
-	/* ===== LVGL 总线 2: CST816T 触摸的独立位带 I2C(PA8=SCL, PB4=SDA) =====
-	   iic_driver_inst 只做参数校验 + 挂函数指针, 不碰硬件, 不含 I2C 时序, 也不依赖
-	   调度器, 可在 osKernelStart 前调用。SDA/SCL 的真正配置不在这里做: 由 CST816T
-	   设备驱动在 cst816t_init 里回调 iic 接口的 pf_init 触发 —— 调用链是
-	   lv_port_indev_init → lvgl_bsp_indev_inst() → cst816t_inst() → cst816t_init()
-	   (含各外设 init、RST 复位、寄存器配置与 ChipID 自检, 内含 osDelay) */
-	/* 端口的时钟仍然必须在这里、在调度器起来之前开: pf_init 内部要配 PA8/PB4 的
-	   MODER, 而端口时钟没开时对外设寄存器的写入会被直接丢弃, 引脚就停在复位默认态
-	   —— PB4=NJTRST、PA15=JTDI 这类脚复位后归 JTAG 而不是 GPIO, 连 BSRR 都拉不动,
-	   I2C 的 START 条件根本发不出来(表现为 cst816t_inst 失败、屏幕空白)。
-	   本工程没有 MX_GPIO_Init(参考工程那份迁移时未搬入), 没人替我们开这两个时钟 */
-	__HAL_RCC_GPIOA_CLK_ENABLE(); /* SCL = PA8 */
-	__HAL_RCC_GPIOB_CLK_ENABLE(); /* SDA = PB4 */
-
-	touch_iic_mutex_handle = osMutexNew(NULL);
-	if (NULL == touch_iic_mutex_handle)
-	{
-		Error_Handler(); /* 内核堆不足 */
-	}
-	if (0 != iic_driver_inst(&touch_iic_instance,
-	                         &touch_iic_bus_instance,
-	                         &touch_iic_delay_instance,
-	                         &touch_iic_mutex_instance))
-	{
-		Error_Handler(); /* 总线/延时/互斥量接口参数非法 */
-	}
-
-	/* ===== 总线 2b: MPU6050 + MAX30102 共用的位带 I2C(SCL=PB6, SDA=PB7) =====
-	   @note GPIOB 的时钟在上面触摸那段已开(PB4 与 PB6/PB7 同端口)。
-	   @note iic_init 只配 GPIO, 不含 I2C 时序也没有 osDelay, 可在 osKernelStart 前调;
-	         本总线没有设备驱动替它回调 pf_init(MPU6050/MAX30102 的 iic 接口里没有
-	         pf_init 这个口), 所以只能在这里自己调一次。
-	   @warning 没有任何任务在跑, 这条总线接上电后不会自己发事务 */
+	/* ===== 总线 2: MPU6050 / MAX30102 / AHT21 共用的位带 I2C(SCL=PB6, SDA=PB7) =====
+	   这是全工程唯一一条**共享**总线, 所以实例留在这里由 main.c 建, 三个 adapter
+	   经 extern 引用。
+	   @note 这里只建实例与锁, **不调 pf_init**: SDA/SCL 由三个设备的 adapter 在各自
+	         bsp_inst() 里 iic_claim() 抬起、在 hibernating()/deinst() 里
+	         iic_release() 放下, iic_hal 按 ref_count 门控, 三个设备都退出才真的
+	         释放引脚。留一次无条件 pf_init 会让计数永远回不到 0, 释放出口形同虚设。
+	   @note 独占总线不走这里: CST816T 的(PA8/PB4)在 lvgl adapter 里, AT24C02 的
+	         (PB10/PB3)在 flags adapter 里, 各自管各自的引脚与锁。
+	   @warning 设备实例化都在 osKernelStart() 之后的任务里, 所以启动内核之前这条
+	            总线的引脚还没配 —— 而这个阶段也没有任何代码会发起事务 */
 	iic_mutex_handle = osMutexNew(NULL);
 	if (NULL == iic_mutex_handle)
 	{
@@ -659,40 +683,20 @@ int main(void)
 	{
 		Error_Handler(); /* 总线/延时/互斥量接口参数非法 */
 	}
-	if (0 != iic_instance.pf_init(&iic_instance))
-	{
-		Error_Handler(); /* 参数非法; 正常不会返回非0 */
-	}
-
-	/* ===== 总线 2c: AT24C02 独占的位带 I2C(SCL=PB10, SDA=PB3) =====
-	   @note GPIOB 的时钟在上面触摸那段已开(PB3/PB10 与 PB4 同端口)。
-	   @note 不注入互斥量: 这条线上只有 AT24C02 一个器件且无任务访问(见 PV 区说明)。
-	   @note iic_init 只配 GPIO, 不含 I2C 时序也没有 osDelay, 可在 osKernelStart 前调;
-	         本总线同样没有设备驱动替它回调 pf_init, 只能在这里自己调一次;
-	         真正构造 AT24C02 实例的 storage_bsp_at24c02_inst() 要等有任务时再调
-	         (它内含 osDelay)。 */
-	if (0 != iic_driver_inst(&at24c02_iic_instance,
-	                         &at24c02_iic_bus_instance,
-	                         &at24c02_iic_delay_instance,
-	                         NULL))
-	{
-		Error_Handler(); /* 总线/延时接口参数非法 */
-	}
-	if (0 != at24c02_iic_instance.pf_init(&at24c02_iic_instance))
-	{
-		Error_Handler(); /* 参数非法; 正常不会返回非0 */
-	}
 
 	/* ===== MAX30102 INT 线: PA3/EXTI3(FIFO 满下降沿) =====
-	   @note exti_driver_inst 内部自己调 HAL_GPIO_Init 配 PA3, 并把这个实例按线号
+	   @note pf_init 经由 gpio_hal 配 PA3(端口时钟也由它开), 并把这个实例按线号
 	         注册进 exti_hal 的分发表; 可在 osKernelStart 前调(不依赖调度器)。
 	   @note 只挂实例与回调, **不开中断**: NVIC 使能在 exti_enable_interrupt 里,
 	         由心率服务的 heartrate_bsp_enable_FIFO_FULL_interrupt() 在任务里触发
 	         —— 那时 max30102 实例已构造, ISR 进来不会打到空回调 */
-	__HAL_RCC_GPIOA_CLK_ENABLE(); /* PA3(INT) 与 PA8(触摸 SCL) 同端口, 这里再开一次无副作用 */
 	if (0 != exti_driver_inst(&max30102_exti_instance,
 	                          &max30102_exti_cfg,
 	                          &max30102_exti_delay_instance))
+	{
+		Error_Handler();
+	}
+	if (0 != max30102_exti_instance.pf_init(&max30102_exti_instance))
 	{
 		Error_Handler();
 	}
@@ -720,6 +724,24 @@ int main(void)
 	{
 		Error_Handler(); /* SPI2 配置非法(基地址/信号量/延时) */
 	}
+
+	/* ===== PWM: TIM4 的 CH3/CH4(两路, 同频 1kHz / 各 50%) =====
+	   pwm_driver_inst 只做参数校验 + 装配内嵌 htim 句柄 + 挂函数指针, 不碰硬件;
+	   真正的初始化(开 TIM4/GPIOB 时钟 + 配 PB8/PB9 复用 → 算 PSC/ARR →
+	   HAL_TIM_PWM_Init → 逐通道 ConfigChannel + Start)全在 pf_init 里, 是纯寄存器
+	   操作、不依赖调度器, 所以直接在这里调, 不必等 osKernelStart。
+	   @note PB8/PB9 上没有负载: 要验波形得拿示波器/万用表量这两只脚
+	   @warning 返回值必须看: 非 0 = 参数非法或 TIM 没配起来(PB8/PB9 上静默无输出) */
+	if (0 != pwm_driver_inst(&pwm_instance, &pwm_cfg))
+	{
+		Error_Handler(); /* PWM 配置非法(基地址/freq 越界) */
+	}
+	if (0 != pwm_instance.pf_init(&pwm_instance))
+	{
+		Error_Handler(); /* TIM4 初始化失败 */
+	}
+	printf("[PWM] init ok(TIM4_CH3/CH4 @ PB8/PB9, %uHz, CH3/CH4 = 50%%)\r\n",
+		   (unsigned int)pwm_cfg.freq_hz);
 
 	/* ===== FreeRTOS/CMSIS-RTOS v2: 只启动 LVGL 一个服务 =====
 	   @note osKernelInitialize() 必须在任何 osThreadNew/osMessageQueueNew 之前;
@@ -764,8 +786,8 @@ int main(void)
 	}
 
 	/* ===== AD 按键服务: 建 "key" 任务, 每 100ms 读一次键(PA2=ADC1_IN2) =====
-	   ADC1 的时钟与 PA2 的模拟模式在 HAL_ADC_MspInit 里配, 由任务体内的
-	   key_bsp_inst → adkey_inst → adc_init → HAL_ADC_Init 回调触发
+	   ADC1 的时钟与 PA2 的模拟模式在 adc_hal 的 pf_init 里配(不走 MSP), 由任务
+	   体内的 key_bsp_inst → adkey_inst → adc_init 触发
 	   @note 本段只建任务, 不碰设备: key_bsp_inst() 里的 ADC 初始化与采样自检都要在
 	         任务上下文做
 	   @warning 返回值必须看: 非 0 = "key" 任务创建失败(内核堆不足) */
@@ -831,6 +853,27 @@ int main(void)
 	service_humiture_init();
 	printf("[HUMITURE] service init ok(\"humiture\" 任务已建; AHT21 构造在任务体内做)\r\n");
 #endif
+
+	/* ===== flags 服务: AT24C02(独占位带 I2C, PB10=SCL / PB3=SDA) =====
+	   @note service_flags_init() 只建一个**一次性任务**(不碰设备): 真正的构造在那个
+	         任务体内跑 —— 它内含 osDelay(上电延时 + 写周期 ACK 探测), 必须等调度器
+	         起来。构造完任务就 osThreadExit, 之后 service_flags_read/write 同步返回。
+	   @note 构造是异步的: 本函数返回时 AT24C02 还没好。要确认就调
+	         service_flags_is_ready(), 或者直接调 service_flags_* 看返不返 -3
+	         (SERVICE_FLAGS_ERR_NOT_READY)。
+	   @note 本服务**没有消费者**: 读写的 API 目前全工程无人调用, 上电只会构造一次
+	         器件(驱动 init 里那次 ACK 探测), 之后不会自发产生任何 I2C 事务。
+	   @warning 返回值必须看: 非 0 = "flags" 任务创建失败(内核堆不足) */
+	{
+		int8_t flags_rc = service_flags_init();
+
+		if (0 != flags_rc)
+		{
+			printf("\r\n[FLAGS] service_flags_init failed, rc=%d(内核堆不足?)\r\n", (int)flags_rc);
+			Error_Handler();
+		}
+		printf("[FLAGS] service init ok(\"flags\" 任务已建; AT24C02 构造在任务体内做)\r\n");
+	}
 
 	/* ===== 运行统计打印任务: 每 5 秒打一次内核堆 + 任务表(栈水位) + CPU 占比 =====
 	   时基 TIM5 由内核在 vTaskStartScheduler() 里启动(见 FreeRTOSConfig.h)

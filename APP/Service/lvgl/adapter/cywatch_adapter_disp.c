@@ -58,20 +58,34 @@ static bsp_st7789t3_driver_t st7789t3_instance;
 /* 应用层(main.c)提供的总线实例: LCD 独占 SPI1 + DMA2_Stream3 */
 extern spi_driver_t lcd_spi_instance;
 
-/* ============================= 引脚描述符 ============================= */
-/* DC/CS/RST/背光 每根线一个描述符(端口+引脚号集中在这一张表里).
-   驱动接口结构体不再携带实例成员, 故四根线各挂一个自己的转发函数(见下),
-   各自引用本表里的一行 —— 不再走"描述符当不透明实例传入"的写法 */
-typedef struct
+/* ============================= 引脚配置 ============================= */
+/* DC/CS/RST/背光 每根线一个 gpio 实例 —— 必须各自独立: 合成一个掩码写就变成
+   三根线同时翻转. 速度取 LOW: 它们只在命令间/帧间翻转, 不跟 SCK 的边沿 */
+static gpio_cfg_t s_lcd_dc_cfg =
 {
-	GPIO_TypeDef *p_port;
-	uint16_t pin;
-} st7789t3_pin_t;
+	.p_port = LCD_DC_GPIO_Port,  .pins = LCD_DC_Pin,
+	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
+};
+static gpio_cfg_t s_lcd_cs_cfg =
+{
+	.p_port = LCD_CS_GPIO_Port,  .pins = LCD_CS_Pin,
+	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
+};
+static gpio_cfg_t s_lcd_rst_cfg =
+{
+	.p_port = LCD_RST_GPIO_Port, .pins = LCD_RST_Pin,
+	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
+};
+static gpio_cfg_t s_lcd_bl_cfg =
+{
+	.p_port = ST7789T3_BL_PORT,  .pins = ST7789T3_BL_PIN,
+	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
+};
 
-static st7789t3_pin_t s_lcd_dc_pin  = { LCD_DC_GPIO_Port,  LCD_DC_Pin  };
-static st7789t3_pin_t s_lcd_cs_pin  = { LCD_CS_GPIO_Port,  LCD_CS_Pin  };
-static st7789t3_pin_t s_lcd_rst_pin = { LCD_RST_GPIO_Port, LCD_RST_Pin };
-static st7789t3_pin_t s_lcd_bl_pin  = { ST7789T3_BL_PORT,  ST7789T3_BL_PIN };
+static gpio_driver_t s_lcd_dc_pin;
+static gpio_driver_t s_lcd_cs_pin;
+static gpio_driver_t s_lcd_rst_pin;
+static gpio_driver_t s_lcd_bl_pin;
 
 static st7789t3_spi_interface_t         st7789t3_spi_interface_instance;
 static st7789t3_gpio_interface_t        st7789t3_gpio_interface_instance;
@@ -80,22 +94,20 @@ static st7789t3_pwm_interface_t         st7789t3_pwm_interface_instance;
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_pin_write
- * @brief   引脚描述符写(0=低电平, 非0=高电平)
- * @param   p_pin[in] 引脚描述符
+ * @brief   引脚写(0=低电平, 非0=高电平)
+ * @param   p_pin[in] 引脚 gpio 实例
  * @param   level[in] 电平
  *
  * @return  无
  *****************************************************************************/
-static void lvgl_bsp_disp_pin_write(const st7789t3_pin_t *p_pin,
-										uint8_t level)
+static void lvgl_bsp_disp_pin_write(gpio_driver_t *p_pin, uint8_t level)
 {
 	if (NULL == p_pin)
 	{
 		return;
 	}
 
-	HAL_GPIO_WritePin(p_pin->p_port, p_pin->pin,
-					  (0 == level) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+	(void)p_pin->pf_write(p_pin, (0U == level) ? 0U : 1U);
 }
 
 /******************************************************************************
@@ -169,7 +181,7 @@ static void lvgl_bsp_disp_backlight_set(uint8_t level)
  *                的 —— 电平等同于没写。于是 CS 被模块自身上拉拉高 → 面板忽略全部
  *                SPI 流量, RST 复位脉冲也发不出去 → 整屏不亮, 而串口日志一切正常
  *                (驱动只发不收, 没有回读校验)。
- *          @note PC13 在 GPIOC, 而全工程没有任何地方开过 GPIOC 的时钟, 必须自己开。
+ *          @note PC13 在 GPIOC: 端口时钟由 gpio_hal 在自己的 pf_init 里开。
  *          @note 先写 ODR 再配 MODER(与参考工程同序): 输出锁存器预置成空闲电平,
  *                引脚一变成输出就立刻是 RST/CS/DC 的高电平, 不会产生一次假复位/
  *                假片选。
@@ -177,38 +189,21 @@ static void lvgl_bsp_disp_backlight_set(uint8_t level)
  *****************************************************************************/
 static int8_t lvgl_bsp_disp_gpio_init(void)
 {
-	GPIO_InitTypeDef gpio = { 0 };
+	(void)s_lcd_rst_pin.pf_write(&s_lcd_rst_pin, 1U);
+	(void)s_lcd_cs_pin.pf_write(&s_lcd_cs_pin, 1U);
+	(void)s_lcd_dc_pin.pf_write(&s_lcd_dc_pin, 1U);
+	(void)s_lcd_bl_pin.pf_write(&s_lcd_bl_pin, 0U);
 
-	__HAL_RCC_GPIOA_CLK_ENABLE();
-	__HAL_RCC_GPIOC_CLK_ENABLE();
+	(void)s_lcd_rst_pin.pf_init(&s_lcd_rst_pin);
+	(void)s_lcd_cs_pin.pf_init(&s_lcd_cs_pin);
+	(void)s_lcd_dc_pin.pf_init(&s_lcd_dc_pin);
 
-	HAL_GPIO_WritePin(s_lcd_rst_pin.p_port, s_lcd_rst_pin.pin, GPIO_PIN_SET);
-	HAL_GPIO_WritePin(s_lcd_cs_pin.p_port,  s_lcd_cs_pin.pin,  GPIO_PIN_SET);
-	HAL_GPIO_WritePin(s_lcd_dc_pin.p_port,  s_lcd_dc_pin.pin,  GPIO_PIN_SET);
-	HAL_GPIO_WritePin(s_lcd_bl_pin.p_port,  s_lcd_bl_pin.pin,  GPIO_PIN_RESET);
-
-	gpio.Mode  = GPIO_MODE_OUTPUT_PP;
-	gpio.Pull  = GPIO_NOPULL;
-	gpio.Speed = GPIO_SPEED_FREQ_LOW;
-
-	gpio.Pin = s_lcd_rst_pin.pin;
-	HAL_GPIO_Init(s_lcd_rst_pin.p_port, &gpio);
-
-	gpio.Pin = s_lcd_cs_pin.pin;
-	HAL_GPIO_Init(s_lcd_cs_pin.p_port, &gpio);
-
-	gpio.Pin = s_lcd_dc_pin.pin;
-	HAL_GPIO_Init(s_lcd_dc_pin.p_port, &gpio);
-
-	gpio.Pin = s_lcd_bl_pin.pin;
-	HAL_GPIO_Init(s_lcd_bl_pin.p_port, &gpio);
-
-	return 0;
+	return s_lcd_bl_pin.pf_init(&s_lcd_bl_pin);
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_gpio_deinit
- * @brief   释放四根控制脚, 恢复复位默认态
+ * @brief   释放四根控制脚, 置低功耗态模拟输入
  *
  * @return  0 success
  *
@@ -217,12 +212,11 @@ static int8_t lvgl_bsp_disp_gpio_init(void)
  *****************************************************************************/
 static int8_t lvgl_bsp_disp_gpio_deinit(void)
 {
-	HAL_GPIO_DeInit(s_lcd_rst_pin.p_port, s_lcd_rst_pin.pin);
-	HAL_GPIO_DeInit(s_lcd_cs_pin.p_port,  s_lcd_cs_pin.pin);
-	HAL_GPIO_DeInit(s_lcd_dc_pin.p_port,  s_lcd_dc_pin.pin);
-	HAL_GPIO_DeInit(s_lcd_bl_pin.p_port,  s_lcd_bl_pin.pin);
+	(void)s_lcd_rst_pin.pf_deinit(&s_lcd_rst_pin);
+	(void)s_lcd_cs_pin.pf_deinit(&s_lcd_cs_pin);
+	(void)s_lcd_dc_pin.pf_deinit(&s_lcd_dc_pin);
 
-	return 0;
+	return s_lcd_bl_pin.pf_deinit(&s_lcd_bl_pin);
 }
 
 /******************************************************************************
@@ -342,12 +336,17 @@ static int8_t st7789t3_spi_send_bytes_dma(uint8_t *pdata, uint32_t size)
  *         -2 st7789t3_inst 失败(负值语义见驱动头文件 @return, -6 = 面板初始化失败)
  *
  * @note    须在 osKernelStart() 之后的任务上下文调用(内部 osDelay);
- *          SPI1 的 PA5/PA7 与 DMA2_Stream3 由 spi_hal 的 HAL_SPI_MspInit 配置,
- *          调用方不要再调 MX_SPI1_Init
+ *          SPI1 的时钟/PA5/PA7/DMA2_Stream3 都由 spi_hal 的 pf_init 配, 调用方不要再动
  *****************************************************************************/
 int8_t lvgl_bsp_disp_inst(void)
 {
 	int8_t ret = 0;
+
+	/* 0. 装配四根控制脚各自的 gpio 实例(不碰硬件, 真正配置在 gpio 的 pf_init 里) */
+	(void)gpio_driver_inst(&s_lcd_dc_pin,  &s_lcd_dc_cfg);
+	(void)gpio_driver_inst(&s_lcd_cs_pin,  &s_lcd_cs_cfg);
+	(void)gpio_driver_inst(&s_lcd_rst_pin, &s_lcd_rst_cfg);
+	(void)gpio_driver_inst(&s_lcd_bl_pin,  &s_lcd_bl_cfg);
 
 	/* 1. 挂SPI接口(转发到 main.c 的 lcd_spi_instance)
 	      四根控制脚的 GPIO 配置不在这里做, 已搬进 lvgl_bsp_disp_gpio_init, 由驱动在

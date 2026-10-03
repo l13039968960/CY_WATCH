@@ -42,8 +42,39 @@ static int8_t uart_rx_read(uart_driver_t *p_uart_instance, uint8_t *pdata, uint3
 static uint32_t uart_rx_get_count(uart_driver_t *p_uart_instance);
 static int8_t uart_rx_start(uart_driver_t *p_uart_instance);
 static void uart_irq_handler(uart_driver_t *p_uart_instance);
-static void uart_dma_tx_irq_handler(uart_driver_t *p_uart_instance);
-static void uart_dma_rx_irq_handler(uart_driver_t *p_uart_instance);
+
+/********************************* 私有辅助 *********************************/
+
+/******************************************************************************
+ * @name    uart_clk_enable
+ * @brief   开本 UART 外设的时钟(引脚时钟由 gpio_hal 负责)
+ * @param   p_uart[in] UART外设基地址
+ *
+ * @note    只能按基地址分派: RCC 的时钟使能宏连寄存器位都是编译期固定的
+ *          (__HAL_RCC_USART1_CLK_ENABLE 直接写 APB2ENR 的 USART1EN), HAL 没有
+ *          "按基地址查位" 的通用 API.
+ *****************************************************************************/
+static void uart_clk_enable(USART_TypeDef *p_uart)
+{
+	if (USART1 == p_uart)      { __HAL_RCC_USART1_CLK_ENABLE(); }
+	else if (USART2 == p_uart) { __HAL_RCC_USART2_CLK_ENABLE(); }
+	else if (USART6 == p_uart) { __HAL_RCC_USART6_CLK_ENABLE(); }
+}
+
+/******************************************************************************
+ * @name    uart_clk_disable
+ * @brief   关本 UART 的时钟(pf_deinit 收尾用)
+ * @param   p_uart[in] UART外设基地址
+ *
+ * @note    ★只关 UART 外设时钟, 不关 GPIO 端口时钟★ —— 端口上还有 ADC/EXTI/IIC
+ *          共用, 连端口时钟一起关会把它们一起打死.
+ *****************************************************************************/
+static void uart_clk_disable(USART_TypeDef *p_uart)
+{
+	if (USART1 == p_uart)      { __HAL_RCC_USART1_CLK_DISABLE(); }
+	else if (USART2 == p_uart) { __HAL_RCC_USART2_CLK_DISABLE(); }
+	else if (USART6 == p_uart) { __HAL_RCC_USART6_CLK_DISABLE(); }
+}
 
 /********************************* 环形缓冲操作 *********************************/
 
@@ -348,32 +379,6 @@ static void uart_irq_handler(uart_driver_t *p_uart_instance)
 	HAL_UART_IRQHandler(&p_uart_instance->huart);
 }
 
-/******************************************************************************
- * @brief   DMA TX流IRQ入口(NORMAL模式发送完成)
- *****************************************************************************/
-static void uart_dma_tx_irq_handler(uart_driver_t *p_uart_instance)
-{
-	if ((NULL == p_uart_instance) || (NULL == p_uart_instance->cfg.p_hdma_tx))
-	{
-		return;
-	}
-
-	HAL_DMA_IRQHandler(p_uart_instance->cfg.p_hdma_tx);
-}
-
-/******************************************************************************
- * @brief   DMA RX流IRQ入口(CIRCULAR模式半传输/写满/错误)
- *****************************************************************************/
-static void uart_dma_rx_irq_handler(uart_driver_t *p_uart_instance)
-{
-	if ((NULL == p_uart_instance) || (NULL == p_uart_instance->cfg.p_hdma_rx))
-	{
-		return;
-	}
-
-	HAL_DMA_IRQHandler(p_uart_instance->cfg.p_hdma_rx);
-}
-
 /********************************* HAL回调 *********************************/
 
 /******************************************************************************
@@ -533,9 +538,13 @@ static int8_t uart_wait_rxcplt(uart_driver_t *p_uart_instance, uint32_t timeout_
 /******************************************************************************
  * @brief   UART驱动初始化: 初始化UART外设到运行态
  * @return  0 成功 / -1 实例空 / -2 初始化失败
- * @note    ★本工程没有 HAL_UART_MspInit★(与 SPI/IIC 不同): USART1 时钟与 PA9/PA10
- *          由 Core/system/uart/uart.c 的 UART_Init() 配, TX/RX DMA流与 NVIC 由
- *          adapter 的 nordic_bsp_dma_init() 配 —— 两者都必须在本函数之前跑完。
+ * @note    UART 的时钟与引脚都在本函数里配, 不走 ST 的 MSP 回调
+ *          (HAL_UART_MspInit 未实现, HAL 自带的那个空弱函数不会动 GPIO).
+ * @note    ★与 Core/system/uart/uart.c 的 UART_Init() 是重复配置★: 那一处用全局
+ *          huart1 服务 printf, 必须留着。两处配的是同一组引脚、同样的参数, 且
+ *          RCC 使能是置位幂等, 重复执行没有副作用。
+ * @note    TX/RX DMA 流与它们的 NVIC 由 adapter 的 nordic_bsp_dma_init() 配,
+ *          必须在本函数之前跑完(DMA 句柄由 cfg 注入)。
  * @note    引用计数: ref_count 由 0→1 时才真正初始化外设(重复init不会重配一遍)
  *****************************************************************************/
 static int8_t uart_init(uart_driver_t *p_uart_instance)
@@ -548,6 +557,12 @@ static int8_t uart_init(uart_driver_t *p_uart_instance)
 	/* 首个使用者才真正初始化UART外设 */
 	if (0 == p_uart_instance->ref_count)
 	{
+		/* 时钟与引脚都在这里配: 后面 HAL_UART_Init 内部那次 HAL_UART_MspInit
+		   是空弱函数, 不会再动 GPIO —— 所以这一步不能省, 也不能挪到后面 */
+		uart_clk_enable(p_uart_instance->cfg.p_uart_base);
+
+		(void)p_uart_instance->gpio.pf_init(&p_uart_instance->gpio);
+
 		if (HAL_OK != HAL_UART_Init(&p_uart_instance->huart))
 		{
 			return -2;
@@ -562,11 +577,16 @@ static int8_t uart_init(uart_driver_t *p_uart_instance)
 }
 
 /******************************************************************************
- * @brief   UART驱动反初始化: 关闭UART外设
+ * @brief   UART驱动反初始化: 关闭UART外设, 并把引脚置低功耗态(模拟输入)
  * @return  0 成功 / -1 实例空
- * @note    ★本函数只关 USART1 本体★: 本工程没有 HAL_UART_MspDeInit, DMA流、
- *          NVIC 与 PA9/PA10 都不会被这里复位 —— 那些由调用方(adapter 的
- *          nordic_bsp_deinst)自己停, 见其 @note。
+ * @note    HAL_UART_DeInit 回调的 MspDeInit 是空弱函数, 引脚与时钟由本函数自己收尾.
+ * @note    本函数有**低功耗语义**: 引脚不能只 DeInit 到复位态 ——
+ *          F4 的 GPIO 复位值是**浮空输入**(不是模拟), 施密特触发器还开着, 悬空脚
+ *          会随噪声来回翻转、白耗电。要再配成模拟输入才算真的关掉输入缓冲。
+ * @note    ★DMA 流与 NVIC 不在这里停★: 那些由调用方(adapter 的
+ *          nordic_bsp_deinst)自己 DisableIRQ / DeInit, 见其 @note。
+ * @note    调用本函数后 PA9/PA10 不再是串口, printf 跟着失效 —— 本函数只在
+ *          nordic 服务初始化失败的路径上被调, 正常流程不受影响。
  * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设
  *****************************************************************************/
 static int8_t uart_deinit(uart_driver_t *p_uart_instance)
@@ -586,6 +606,12 @@ static int8_t uart_deinit(uart_driver_t *p_uart_instance)
 	if (0 == p_uart_instance->ref_count)
 	{
 		HAL_UART_DeInit(&p_uart_instance->huart);
+
+		/* 引脚收尾(DeInit → 模拟输入, 顺序在 gpio_hal 里) */
+		(void)p_uart_instance->gpio.pf_deinit(&p_uart_instance->gpio);
+
+		/* ★只关 UART 时钟★: 端口上还有 ADC/EXTI/IIC 共用, 端口时钟不能关 */
+		uart_clk_disable(p_uart_instance->cfg.p_uart_base);
 
 		p_uart_instance->init_state = 0;
 	}
@@ -638,8 +664,6 @@ static int8_t uart_deinst(uart_driver_t *p_uart_instance)
 	p_uart_instance->pf_wait_txcplt = NULL;
 	p_uart_instance->pf_wait_rxcplt = NULL;
 	p_uart_instance->pf_irq_handler = NULL;
-	p_uart_instance->pf_dma_tx_irq_handler = NULL;
-	p_uart_instance->pf_dma_rx_irq_handler = NULL;
 
 	return 0;
 }
@@ -649,7 +673,7 @@ static int8_t uart_deinst(uart_driver_t *p_uart_instance)
  *          (不碰硬件; 外设真正初始化在 pf_init() 里做)。
  *          p_uart_instance 须为全局变量(环形缓冲内嵌其中)。
  * @return  0 成功 / -1 实例空 / -2 cfg空 / -3 基地址空 / -4 TX DMA空
- *          / -5 RX DMA空 / -6 信号量接口空 / -7 延时接口空
+ *          / -5 RX DMA空 / -6 信号量接口空 / -7 延时接口空 / -8 GPIO端口空
  * @note    构造后由应用调 pf_init() 起外设、pf_rx_start() 启动接收;
  *          TX/RX DMA流须由应用先行初始化(见文件头接线要求)
  *****************************************************************************/
@@ -700,6 +724,12 @@ int8_t uart_driver_inst(uart_driver_t *p_uart_instance,
 		return -7;
 	}
 
+	/* 引脚驱动(端口空/非法由 gpio_hal 拦) */
+	if (0 != gpio_driver_inst(&p_uart_instance->gpio, &p_cfg->gpio))
+	{
+		return -8;
+	}
+
 	/* 加载硬件配置 */
 	p_uart_instance->cfg = *p_cfg;
 
@@ -740,8 +770,6 @@ int8_t uart_driver_inst(uart_driver_t *p_uart_instance,
 	p_uart_instance->pf_wait_txcplt = uart_wait_txcplt;
 	p_uart_instance->pf_wait_rxcplt = uart_wait_rxcplt;
 	p_uart_instance->pf_irq_handler = uart_irq_handler;
-	p_uart_instance->pf_dma_tx_irq_handler = uart_dma_tx_irq_handler;
-	p_uart_instance->pf_dma_rx_irq_handler = uart_dma_rx_irq_handler;
 
 	return 0;
 }

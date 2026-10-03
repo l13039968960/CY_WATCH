@@ -340,7 +340,7 @@
               <MiscControls>-Wno-padded -Wno-sign-conversion -Wno-implicit-int-conversion -Wno-declaration-after-statement -Wno-newline-eof -Wno-cast-qual -Wno-extra-semi-stmt -Wno-switch-enum -Wno-cast-align -Wno-disabled-macro-expansion -Wno-missing-variable-declarations -Wno-unreachable-code-return -Wno-assign-enum -Wno-unused-parameter -Wno-missing-prototypes -Wno-missing-noreturn -Wno-covered-switch-default -Wno-unused-function -Wno-comma -Wno-bad-function-cast -Wno-unreachable-code-break -Wno-unreachable-code -Wno-shorten-64-to-32 -Wno-format-nonliteral -fno-short-enums</MiscControls>
               <Define>USE_HAL_DRIVER,STM32F411xE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\BSP\Nordic;..\..\Core\UART;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\nordic;..\..\APP\Service\nordic\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger;..\..\BSP\MPU6050;..\..\BSP\MAX30102;..\..\BSP\AHT21;..\..\BSP\AT24C02;..\..\BSP\AT24C02\adapter;..\..\APP\Service\attitude;..\..\APP\Service\attitude\adapter;..\..\APP\Service\attitude\ServiceFunction;..\..\APP\Service\heartrate;..\..\APP\Service\humiture;..\..\APP\Service\humiture\adapter;..\..\APP\Service\heartrate\adapter;..\..\APP\Service\heartrate\ServiceFunction</IncludePath>
+              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\DMA;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Core\PWM;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\BSP\Nordic;..\..\Core\UART;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\nordic;..\..\APP\Service\nordic\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger;..\..\BSP\MPU6050;..\..\BSP\MAX30102;..\..\BSP\AHT21;..\..\BSP\AT24C02;..\..\APP\Service\flags\adapter;..\..\APP\Service\attitude;..\..\APP\Service\attitude\adapter;..\..\APP\Service\attitude\ServiceFunction;..\..\APP\Service\heartrate;..\..\APP\Service\humiture;..\..\APP\Service\humiture\adapter;..\..\APP\Service\flags;..\..\APP\Service\heartrate\adapter;..\..\APP\Service\heartrate\ServiceFunction</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -447,6 +447,16 @@
           </Files>
         </Group>
         <Group>
+          <GroupName>Core/DMA</GroupName>
+          <Files>
+            <File>
+              <FileName>dma_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\DMA\dma_hal.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
           <GroupName>Core/EXTI</GroupName>
           <Files>
             <File>
@@ -483,6 +493,16 @@
               <FileName>adc_hal.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Core\ADC\adc_hal.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Core/PWM</GroupName>
+          <Files>
+            <File>
+              <FileName>pwm_hal.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\PWM\pwm_hal.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -608,6 +628,16 @@
               <FileName>stm32f4xx_hal_adc_ex.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_adc_ex.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_tim.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_tim.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_tim_ex.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_tim_ex.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -3142,12 +3172,22 @@
           </Files>
         </Group>
         <Group>
-          <GroupName>Bsp/AT24C02/adapter</GroupName>
+          <GroupName>Service/flags/adapter</GroupName>
           <Files>
             <File>
               <FileName>cywatch_adapter_at24c02.c</FileName>
               <FileType>1</FileType>
-              <FilePath>..\..\BSP\AT24C02\adapter\cywatch_adapter_at24c02.c</FilePath>
+              <FilePath>..\..\APP\Service\flags\adapter\cywatch_adapter_at24c02.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/flags</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_flags.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\flags\cywatch_service_flags.c</FilePath>
             </File>
           </Files>
         </Group>
