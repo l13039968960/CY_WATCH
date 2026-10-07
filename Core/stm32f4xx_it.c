@@ -278,4 +278,20 @@ void EXTI3_IRQHandler(void)
   exti_irq_handler(GPIO_PIN_3);
 }
 
+/**
+  * @brief EXTI1 中断: 充电检测 PB1(充电时低电平, 双边沿)
+  *
+  *        转发到 exti_hal 分发(按线号 1 反查实例) → power adapter 的
+  *        power_chg_exti_cb: 只 osSemaphoreRelease, 不读电平、不发事件
+  *        (事件入队口用 osKernelLock, 中断里用不了).
+  *        电源服务被唤醒后读 PB1 真值, 翻转才发 EVT_SERVICE_POWER_CHARGING.
+  *
+  * @note 优先级 6 >= configLIBRARY_MAX_SYSCALL_INTERRUPT_PRIORITY(5):
+  *       ISR 内会调 osSemaphoreRelease(中断安全 API)
+  */
+void EXTI1_IRQHandler(void)
+{
+  exti_irq_handler(GPIO_PIN_1);
+}
+
 /* USER CODE END 1 */

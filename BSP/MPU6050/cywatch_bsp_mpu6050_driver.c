@@ -23,9 +23,9 @@
  *****************************************************************************/
 #include "cywatch_bsp_mpu6050_driver.h"
 
-/* 默认配置 */
-#define MPU6050_DEFAULT_GYRO_FS MPU6050_GCONFIG_FS_SEL_250
-#define MPU6050_DEFAULT_ACCEL_FS MPU6050_ACONFIG_AFS_SEL_2G
+/* 默认配置(±1000dps/±8g: 跑步时加速度峰值可达数 g, ±2g 会削顶使计步整段失效) */
+#define MPU6050_DEFAULT_GYRO_FS MPU6050_GCONFIG_FS_SEL_1000
+#define MPU6050_DEFAULT_ACCEL_FS MPU6050_ACONFIG_AFS_SEL_8G
 #define MPU6050_DEFAULT_DLPF MPU6050_CONFIG_DLPF_44HZ
 #define MPU6050_DEFAULT_SMPLRT_DIV 0x00
 #define MPU6050_STARTUP_DELAY_MS 100
@@ -56,12 +56,15 @@ static int8_t mpu6050_wakeup(struct bsp_mpu6050_driver *p_mpu6050_instance);
  *         -3 rtos_yield null
  *         -4 delay null
  *         -5 mpu6050 ADDR error
+ *         其它负值: 透传 mpu6050_init 的失败码(初始化失败)
  *****************************************************************************/
 int8_t mpu6050_inst(bsp_mpu6050_driver_t *p_mpu6050_instance,
 					mpu6050_iic_interface_t *p_iic_interface,
 					mpu6050_yield_interface_t *p_yield_interface,
 					mpu6050_delay_interface_t *p_delay_interface)
 {
+	int8_t ret = 0;
+
 	if (NULL == p_mpu6050_instance)
 	{
 		return -1;
@@ -123,8 +126,14 @@ int8_t mpu6050_inst(bsp_mpu6050_driver_t *p_mpu6050_instance,
 	p_mpu6050_instance->pf_hibernating = mpu6050_hibernating;
 	p_mpu6050_instance->pf_wakeup = mpu6050_wakeup;
 
-	/* 初始化 */
-	p_mpu6050_instance->pf_init(p_mpu6050_instance);
+	/* 初始化: 失败必须中止 —— 这里曾经把返回值丢掉只查 WHO_AM_I,
+	   于是配置全失败也照样报"构造成功", 整个排查被它藏住 */
+	ret = p_mpu6050_instance->pf_init(p_mpu6050_instance);
+	if (0 != ret)
+	{
+		p_mpu6050_instance->pf_deinst(p_mpu6050_instance);
+		return ret;
+	}
 
 	if (p_mpu6050_instance->pf_read_id(p_mpu6050_instance) != MPU6050_ID)
 	{
@@ -176,7 +185,6 @@ static int8_t mpu6050_deinst(struct bsp_mpu6050_driver *p_mpu6050_instance)
  *
  * @return  0 success
  *         -1 mpu6050_instance null
- *         -2 device reset failed
  *         -3 wakeup failed
  *         -4 dlpf config failed
  *         -5 gyro config failed
@@ -192,26 +200,10 @@ static int8_t mpu6050_init(struct bsp_mpu6050_driver *p_mpu6050_instance)
 		return -1;
 	}
 
-	/* 1. 软件复位设备 */
-	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
-							MPU6050_PWR_MGMT_1,
-							MPU6050_PWR1_DEVICE_RESET);
-	if (0 != ret)
-	{
-		return -2;
-	}
-
-	/* 等待复位完成 (芯片复位后自动清除DEVICE_RESET位) */
-	p_mpu6050_instance->p_delay_interface->pf_delay(MPU6050_STARTUP_DELAY_MS);
-
-	// #ifdef OS_SUPPORTING
-	// 	p_mpu6050_instance->p_yield_interface->pf_yield();
-	// #endif /* OS_SUPPORTING */
-
-	/* 验证复位后寄存器值 (SLEEP=1, 其余为0 → 0x40) */
-	/* TBD: 如需要可读取PWR_MGMT_1验证 */
-
-	/* 2. 唤醒设备, 选择PLL X轴陀螺仪作为时钟源以获得最佳稳定性 */
+	/* 1. 唤醒设备, 选择PLL X轴陀螺仪作为时钟源以获得最佳稳定性
+	   @note 刻意不发 DEVICE_RESET: 这颗芯片收到复位命令后不应答该字节的 ACK, 写会被
+	         判成失败并中止整个配置序列; 而下面的寄存器反正要全部显式写一遍, 软件复位
+	         是冗余的 —— 去掉它反而少一个 100ms 等待 (实测见 BSP 层逐条写-读回日志) */
 	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
 							MPU6050_PWR_MGMT_1,
 							MPU6050_PWR1_CLKSEL_PLL_X);
@@ -227,7 +219,7 @@ static int8_t mpu6050_init(struct bsp_mpu6050_driver *p_mpu6050_instance)
 	// 	p_mpu6050_instance->p_yield_interface->pf_yield();
 	// #endif /* OS_SUPPORTING */
 
-	/* 3. 配置DLPF: 禁用FSYNC, 设置低通滤波带宽 */
+	/* 2. 配置DLPF: 禁用FSYNC, 设置低通滤波带宽 */
 	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
 							MPU6050_CONFIG,
 							MPU6050_DEFAULT_DLPF);
@@ -236,7 +228,7 @@ static int8_t mpu6050_init(struct bsp_mpu6050_driver *p_mpu6050_instance)
 		return -4;
 	}
 
-	/* 4. 配置陀螺仪量程 */
+	/* 3. 配置陀螺仪量程 */
 	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
 							MPU6050_GYRO_CONFIG,
 							MPU6050_DEFAULT_GYRO_FS);
@@ -245,7 +237,7 @@ static int8_t mpu6050_init(struct bsp_mpu6050_driver *p_mpu6050_instance)
 		return -5;
 	}
 
-	/* 5. 配置加速度计量程 */
+	/* 4. 配置加速度计量程 */
 	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
 							MPU6050_ACCEL_CONFIG,
 							MPU6050_DEFAULT_ACCEL_FS);
@@ -254,7 +246,7 @@ static int8_t mpu6050_init(struct bsp_mpu6050_driver *p_mpu6050_instance)
 		return -6;
 	}
 
-	/* 6. 配置采样率分频 (Sample Rate = Gyro Output Rate / (1 + DIV)) */
+	/* 5. 配置采样率分频 (Sample Rate = Gyro Output Rate / (1 + DIV)) */
 	ret = p_mpu6050_instance->p_iic_interface->pf_writereg(MPU6050_I2C_ADDR,
 							MPU6050_SMPLRT_DIV,
 							MPU6050_DEFAULT_SMPLRT_DIV);
@@ -356,10 +348,10 @@ static int8_t mpu6050_read_accel(struct bsp_mpu6050_driver *p_mpu6050_instance,
 	raw_y = (int16_t)((buf[2] << 8) | buf[3]);
 	raw_z = (int16_t)((buf[4] << 8) | buf[5]);
 
-	/* 转换为 g (使用 ±2g 量程灵敏度) */
-	*p_accel_x = (float)raw_x / MPU6050_ACCEL_SENS_2G;
-	*p_accel_y = (float)raw_y / MPU6050_ACCEL_SENS_2G;
-	*p_accel_z = (float)raw_z / MPU6050_ACCEL_SENS_2G;
+	/* 转换为 g (灵敏度须与 MPU6050_DEFAULT_ACCEL_FS 一致, 改量程必须同步改) */
+	*p_accel_x = (float)raw_x / MPU6050_ACCEL_SENS_8G;
+	*p_accel_y = (float)raw_y / MPU6050_ACCEL_SENS_8G;
+	*p_accel_z = (float)raw_z / MPU6050_ACCEL_SENS_8G;
 
 	return 0;
 }
@@ -398,10 +390,10 @@ static int8_t mpu6050_read_gyro(struct bsp_mpu6050_driver *p_mpu6050_instance,
 	raw_y = (int16_t)((buf[2] << 8) | buf[3]);
 	raw_z = (int16_t)((buf[4] << 8) | buf[5]);
 
-	/* 转换为 °/s (使用 ±250°/s 量程灵敏度) */
-	*p_gyro_x = (float)raw_x / MPU6050_GYRO_SENS_250;
-	*p_gyro_y = (float)raw_y / MPU6050_GYRO_SENS_250;
-	*p_gyro_z = (float)raw_z / MPU6050_GYRO_SENS_250;
+	/* 转换为 °/s (灵敏度须与 MPU6050_DEFAULT_GYRO_FS 一致, 改量程必须同步改) */
+	*p_gyro_x = (float)raw_x / MPU6050_GYRO_SENS_1000;
+	*p_gyro_y = (float)raw_y / MPU6050_GYRO_SENS_1000;
+	*p_gyro_z = (float)raw_z / MPU6050_GYRO_SENS_1000;
 
 	return 0;
 }

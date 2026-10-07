@@ -31,6 +31,7 @@
 #include "iic_hal.h"                /* 触摸的位带 I2C 总线 */
 #include "exti_hal.h"               /* exti_driver_t (MAX30102 INT 的占位实例用) */
 #include "pwm_hal.h"                /* TIM4 CH3/CH4 (PB8/PB9) 的两路 PWM */
+#include "adc_hal.h"                /* ADC1: ADKEY(IN2) 与电源电压检测(IN8) 共用 */
 #include "cywatch_rtc.h"            /* 表盘页的日期/时钟来源 */
 #include "cywatch_service_lvgl.h"   /* service_lvgl_init() */
 #include "cywatch_service_fatfs.h"  /* service_fatfs_init() */
@@ -39,7 +40,10 @@
 #include "cywatch_service_AttitudeCalculation.h" /* service_attitudecalculation_init() */
 #include "cywatch_service_HeartRate.h"      /* service_heartrate_init() */
 #include "cywatch_service_humiture.h"       /* service_humiture_init() */
+#include "cywatch_service_power.h"          /* service_power_init() */
 #include "cywatch_service_flags.h"          /* service_flags_init() */
+#include "cywatch_service_watchdog.h"       /* service_watchdog_init() */
+#include "cywatch_service_appcore.h"        /* service_appcore_init() */
 #include "cywatch_adapter_mpu6050.h"        /* attitudecalculation_bsp_*() (自检用) */
 #include "cywatch_adapter_max30102.h"       /* heartrate_bsp_*() (自检/EXTI 回调用) */
 #include "cmsis_os2.h"              /* osKernelInitialize / osKernelStart / osSemaphoreNew */
@@ -65,6 +69,14 @@
    PART_ID / 单次 6 轴 / 单次 FIFO 样本), 自检完再把两条真实服务任务拉起来.
    ★测完请改回 0★ —— 两个服务源码里另有各自的打印开关(见两个 service .c 顶部) */
 #define SENSOR_SVC_LOOPBACK_TEST   0
+
+/* ===== 看门狗服务开关 =====
+   1 = 建 "watchdog" 任务, 任务体内启动 IWDG(超时≈4.096s)并每 1s 喂一口;
+   0 = 整个服务不建(调试期默认).
+   ★为什么默认关★: IWDG 一旦启动软件关不掉, 只有复位能清 —— 挂调试器打断点、
+   单步、或任何让内核停住超过 4s 的操作都会把板子复位, 根本调不了.
+   ★脱离调试/上板前记得改回 1★ (改回来后 cywatch_watchdog.c 才会被链进来) */
+#define WATCHDOG_SERVICE_ENABLE    0
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -349,6 +361,67 @@ static iic_mutex_interface_t iic_mutex_instance =
     .pf_unlock = iic_mutex_unlock,
 };
 
+/* ---- ADC1: ADKEY(IN2/PA2) 与 电源电压检测(IN8/PB0) 共用 ----
+   两个 adapter 在文件内 `extern adc_driver_t adc_instance;`。
+   ★ADC1 全芯片只有一个转换器, 但两个设备各用各的通道, 所以实例由 main.c 持有、
+     通道由 pf_read 的入参给 —— 这与 iic 那种"共用同一组引脚"的共享不一样。
+   ★两个通道的采样互斥: 换通道改的是外设级的规则组寄存器, 结果也在同一个 ADC_DR,
+     交错会读成对方的值, 所以必须注入互斥量。
+   ★引脚不在 cfg 里: 通道跟着引脚走, 由各 adapter 自己 claim/release 时用 gpio_hal
+     配成模拟输入。 */
+adc_driver_t  adc_instance;            /* ADKEY + 电源电压检测共用的 ADC1 */
+
+/* 共享 ADC 的互斥量: 句柄同样归本文件持有 */
+static osMutexId_t adc_mutex_handle = NULL;
+
+static int8_t adc_mutex_lock(void)
+{
+    if (NULL == adc_mutex_handle)
+    {
+        return -1;
+    }
+
+    return (osOK == osMutexAcquire(adc_mutex_handle, osWaitForever)) ? 0 : -1;
+}
+
+static int8_t adc_mutex_unlock(void)
+{
+    if (NULL == adc_mutex_handle)
+    {
+        return -1;
+    }
+
+    return (osOK == osMutexRelease(adc_mutex_handle)) ? 0 : -1;
+}
+
+static adc_mutex_interface_t adc_mutex_instance =
+{
+    .pf_lock   = adc_mutex_lock,
+    .pf_unlock = adc_mutex_unlock,
+};
+
+/* ADC 外设级参数(与通道无关): 12bit 单次软件触发. 通道与采样时间见各自 adapter */
+static adc_cfg_t adc_shared_cfg =
+{
+    .p_adc_base = ADC1,
+    .init =
+    {
+        .ClockPrescaler        = ADC_CLOCK_SYNC_PCLK_DIV4,
+        .Resolution            = ADC_RESOLUTION_12B,
+        .DataAlign             = ADC_DATAALIGN_RIGHT,
+        .ScanConvMode          = DISABLE,
+        .EOCSelection          = ADC_EOC_SINGLE_CONV,
+        .ContinuousConvMode    = DISABLE,
+        .NbrOfConversion       = 1U,
+        .DiscontinuousConvMode = DISABLE,
+        .NbrOfDiscConversion   = 0U,
+        .ExternalTrigConv      = ADC_SOFTWARE_START,
+        .ExternalTrigConvEdge  = ADC_EXTERNALTRIGCONVEDGE_NONE,
+        .DMAContinuousRequests = DISABLE,
+    },
+    .p_mutex_interface = &adc_mutex_instance,
+};
+
 /* ---- MAX30102 INT(PA3/EXTI3): FIFO 满(下降沿)通知 ----
    @note 配置照触摸那条链(CST816T INT PB2)写; 抢占优先级 6 >= configLIBRARY_
          MAX_SYSCALL_INTERRUPT_PRIORITY(5) —— ISR 里要调 osSemaphoreRelease。
@@ -472,6 +545,7 @@ static const osThreadAttr_t g_sensor_selftest_attr =
 static void sensor_selftest_run(void *pvParameters)
 {
     int8_t   rc = 0;
+    int8_t   max_inst_rc = 0; /* MAX30102 构造结果: 失败时实例指针已被清空, 探针不能再调 */
     float    ax = 0.0f, ay = 0.0f, az = 0.0f;
     float    gx = 0.0f, gy = 0.0f, gz = 0.0f;
     uint32_t red = 0, ir = 0, n = 0;
@@ -498,9 +572,9 @@ static void sensor_selftest_run(void *pvParameters)
     }
 
     /* ---------- MAX30102: PART_ID + 模式切换 + 单次 FIFO 样本 ---------- */
-    rc = heartrate_bsp_inst();
-    log_printf("[MAX30102] inst rc=%d (0=成功; -8=init 失败 -9=PART_ID 不是 0x15)\r\n", (int)rc);
-    if (0 == rc)
+    max_inst_rc = heartrate_bsp_inst();
+    log_printf("[MAX30102] inst rc=%d (0=成功; -8=init 失败 -9=PART_ID 不是 0x15)\r\n", (int)max_inst_rc);
+    if (0 == max_inst_rc)
     {
         log_printf("[MAX30102] PART_ID=0x%02X (期望 0x15; 0xFF 表示读失败)\r\n",
                    (unsigned)heartrate_bsp_read_id() & 0xFFU);
@@ -518,7 +592,9 @@ static void sensor_selftest_run(void *pvParameters)
        心率服务卡在"等 FIFO 满中断超时", 要分清是"器件没断言"还是"断言了但 INT 线
        没通到 MCU". 设备寄存器直接经 iic_instance 读, 不绕 MAX30102 驱动.
        ★A_FULL 是"拉低并保持": 直到读了 INTR_STATUS_1 才释放 —— 所以必须先读引脚
-         电平, 再读状态寄存器(读操作会清标志), 顺序反了就什么都看不到★ */
+         电平, 再读状态寄存器(读操作会清标志), 顺序反了就什么都看不到★
+       @note 构造失败时实例指针已被 pf_deinst 清空, 进来就是空指针跳转 */
+    if (0 == max_inst_rc)
     {
         uint8_t mode = 0, wr1 = 0, rd1 = 0, st = 0, wr2 = 0, ovf = 0;
         int8_t  int_rc = 0;
@@ -551,14 +627,14 @@ static void sensor_selftest_run(void *pvParameters)
                    "bit7=1 而引脚恒1=INT 线没通; bit7=0=器件没断言(FIFO_A_FULL 阈值/使能)\r\n");
     }
 
-    log_printf("===== BSP 自检结束, 拉起姿态/心率两个服务 =====\r\n");
+    log_printf("===== BSP 自检结束, 拉起三个传感器服务 =====\r\n");
 
     /* 内核堆只有 24KB(FreeRTOSConfig.h), 任务栈全部从这里切 —— 逐条打印余量,
        哪一条把堆吃光、谁建任务失败, 一眼可见 */
     log_printf("[SENSOR] 起服务前 内核堆余量 = %u 字节\r\n",
                (unsigned)xPortGetFreeHeapSize());
 
-    /* 自检完再把三条真实服务任务拉起来, 之后由它们持有设备 */
+    /* 自检完再把真实服务任务拉起来, 之后由它们持有设备 */
     service_attitudecalculation_init();
     log_printf("[SENSOR] attitude 服务拉起后 内核堆余量 = %u 字节\r\n",
                (unsigned)xPortGetFreeHeapSize());
@@ -684,6 +760,23 @@ int main(void)
 		Error_Handler(); /* 总线/延时/互斥量接口参数非法 */
 	}
 
+	/* ===== ADC1: ADKEY(IN2/PA2) 与 电源电压检测(IN8/PB0) 共用 =====
+	   @note 这里只建实例与锁, **不调 pf_init**: 由两个设备各自 claim/release,
+	         adc_hal 按 ref_count 门控, 两个都退出才真的关 ADC 与时钟。留一次
+	         无条件 pf_init 会让计数永远回不到 0(与 iic 那次同一个坑)。
+	   @note 通道与采样时间不在这里: 它们是 pf_read 的入参, 由各 adapter 给。
+	   @warning 两个设备都在 osKernelStart() 之后的任务里才 claim, 启动内核之前
+	            这个外设还没初始化 —— 而这个阶段也没有任何代码会采 AD */
+	adc_mutex_handle = osMutexNew(NULL);
+	if (NULL == adc_mutex_handle)
+	{
+		Error_Handler(); /* 内核堆不足 */
+	}
+	if (0 != adc_driver_inst(&adc_instance, &adc_shared_cfg))
+	{
+		Error_Handler(); /* ADC 配置非法(基地址为空) */
+	}
+
 	/* ===== MAX30102 INT 线: PA3/EXTI3(FIFO 满下降沿) =====
 	   @note pf_init 经由 gpio_hal 配 PA3(端口时钟也由它开), 并把这个实例按线号
 	         注册进 exti_hal 的分发表; 可在 osKernelStart 前调(不依赖调度器)。
@@ -785,21 +878,14 @@ int main(void)
 		printf("[FATFS] service init ok(\"fatfs\" 任务已建; 挂载/自检在任务体内做)\r\n");
 	}
 
-	/* ===== AD 按键服务: 建 "key" 任务, 每 100ms 读一次键(PA2=ADC1_IN2) =====
+	/* ===== AD 按键服务: 建 "key" 任务, 每 50ms 读一次键(PA2=ADC1_IN2) =====
 	   ADC1 的时钟与 PA2 的模拟模式在 adc_hal 的 pf_init 里配(不走 MSP), 由任务
 	   体内的 key_bsp_inst → adkey_inst → adc_init 触发
 	   @note 本段只建任务, 不碰设备: key_bsp_inst() 里的 ADC 初始化与采样自检都要在
 	         任务上下文做
-	   @warning 返回值必须看: 非 0 = "key" 任务创建失败(内核堆不足) */
-	{
-		int8_t key_rc = service_key_init();
-		if (0 != key_rc)
-		{
-			printf("\r\n[KEY] service_key_init failed, rc=%d(内核堆不足?)\r\n", (int)key_rc);
-			Error_Handler();
-		}
-		printf("[KEY] service init ok(\"key\" 任务已建; ADKEY 构造/轮询在任务体内做)\r\n");
-	}
+	   @note 返回 void: 任务建不起来时它内部自己 for(;;) 兜住(与姿态/心率/温湿度一致) */
+	service_key_init();
+	printf("[KEY] service init ok(\"key\" 任务已建; ADKEY 构造/轮询在任务体内做)\r\n");
 
 	/* ===== Nordic 协议服务: USART1(115200 8N1) + DMA2_Stream7(TX)/Stream2(RX) =====
 	   一条龙里含板级绑定(DMA/NVIC/USART1 驱动)与 BSP 构造, 都在 osKernelStart 之前
@@ -854,6 +940,27 @@ int main(void)
 	printf("[HUMITURE] service init ok(\"humiture\" 任务已建; AHT21 构造在任务体内做)\r\n");
 #endif
 
+	/* ===== 电源服务: 每 10s 采一次电池电压(PB0/ADC1_IN8, 分压 1/2) =====
+	   @note service_power_init() 只建任务、不碰设备: 占住共享 ADC1 那一步在
+	         任务体内做(adc_hal 的 pf_init 会开时钟, 但本函数在 osKernelStart()
+	         之前调, 那时内核还没跑 —— 所以 claim 必须留在任务里)。
+	   @note 与 ADKEY 共用 ADC1(adc_hal 按 ref_count 门控, 互斥量串行化),
+	         走的是另一个通道, 引脚 PA2/PB0 互不干涉。
+	   @note 返回 void: 任务建不起来时它内部死循环(与 attitude/heartrate/
+	         humiture 三个服务一致) */
+	service_power_init();
+	printf("[POWER] service init ok(\"power\" 任务已建; ADC1 占用在任务体内做)\r\n");
+
+	/* ===== app_core 服务: EasyAPP 事件总线唯一的消费者 =====
+	   @note 只建任务, 循环里就是 easyapp_core_run() + osDelay(10): 不需要设备,
+	         也不依赖调度器之外的东西, 但分发在任务上下文做, 所以照例放这里
+	   @note 返回 void: 任务建不起来时它内部死循环(与 attitude/heartrate/
+	         humiture 三个服务一致)
+	   @warning 没有它整条总线是死的 —— 服务发的事件只进队列不出队, 页面处理函数
+	         永远不会被调用(表盘三张卡片恒 0 就是这么来的) */
+	service_appcore_init();
+	printf("[APPCORE] service init ok(\"appcore\" 任务已建; 事件开始分发)\r\n");
+
 	/* ===== flags 服务: AT24C02(独占位带 I2C, PB10=SCL / PB3=SDA) =====
 	   @note service_flags_init() 只建一个**一次性任务**(不碰设备): 真正的构造在那个
 	         任务体内跑 —— 它内含 osDelay(上电延时 + 写周期 ACK 探测), 必须等调度器
@@ -883,6 +990,28 @@ int main(void)
 	{
 		printf("\r\n[RTSTATS] rtstats_start failed(内核堆不足?); 统计日志将缺失\r\n");
 	}
+
+#if WATCHDOG_SERVICE_ENABLE
+	/* ===== 看门狗服务: 高优先级任务, 每 1s 喂一口 IWDG(超时≈4.096s) =====
+	   @note 开关在文件顶部的 PD 区(WATCHDOG_SERVICE_ENABLE), 调试期为 0 整段不编译。
+	   @note 放最后一个建: 前面任一服务失败会走 Error_Handler 死等, 那时看门狗
+	         要是已经跑起来, 板子会被反复复位, 反而看不到串口上打印的失败原因。
+	   @note IWDG 不在 main 里启动, 在任务体内启动 —— 本函数返回到任务首次被调度
+	         之间的启动阶段不计时; 否则启动阶段(LCD 重试、fatfs 首次挂载/格式化)
+	         就会被算进超时(见 cywatch_service_watchdog.h 的 @warning)。
+	   @warning ★从这里往后看门狗就在跑了★: IWDG 一旦启动软件关不掉, 只有复位能清。
+	   @warning 返回值必须看: 非 0 = "watchdog" 任务创建失败(内核堆不足) */
+	{
+		int8_t watchdog_rc = service_watchdog_init();
+
+		if (0 != watchdog_rc)
+		{
+			printf("\r\n[WATCHDOG] service_watchdog_init failed, rc=%d(内核堆不足?)\r\n", (int)watchdog_rc);
+			Error_Handler();
+		}
+		printf("[WATCHDOG] service init ok(\"watchdog\" 任务已建; IWDG 在任务体内启动)\r\n");
+	}
+#endif
 
 	osKernelStart(); /* 成功进入调度器, 不再返回 */
 	/* USER CODE END 2 */

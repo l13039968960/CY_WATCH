@@ -20,17 +20,6 @@
 
 #include <stdint.h>
 
-/* 内部状态枚举: 只服务内部状态机用, 不是页面收的事件.
-   @note 状态值必须带 HUMITURE_ 前缀: C 的枚举常量是文件作用域, 而 main.c 同时
-         include 多个服务头, 不加前缀会 "redefinition of enumerator" 编译失败 */
-typedef enum{
-    EVT_HUMITURE_INIT = 0,
-    EVT_HUMITURE_MEASURE,
-    EVT_HUMITURE_SLEEP,
-    EVT_HUMITURE_SLEEPING,
-    EVT_HUMITURE_ERROR,
-}State_Humiture_Service_t;
-
 /* 一帧温湿度数据. EasyAPP 事件 EVT_SERVICE_HUMITURE_DATA 的 event_data 即指向
    本类型 —— 指向服务内部持有的一份"静态最新帧", APP 层按只读使用, 不要 free/
    改所有权; 该帧每测量周期被本任务覆盖, 消费侧应尽快读走 */
@@ -40,12 +29,12 @@ typedef struct Humiture_Data
     float humidity;    /* 相对湿度, %RH */
 } Humiture_Data_t;
 
-/**
- * @name  service_humiture_init
- * @brief 温湿度服务初始化: 创建服务任务
- * @return 无
- */
+/* 温湿度服务初始化: 创建服务任务 */
 void service_humiture_init(void);
+
+/* 读"最新一帧"的拷贝快照. 内部锁调度器整份拷贝, 拿到的那份不会被下一个测量周期
+ * 覆盖, 也不会跨帧撕裂. 服务未初始化时返回全 0. */
+void service_humiture_get_data(Humiture_Data_t *p_out);
 
 /* 休眠/唤醒: AHT21 软复位并释放共享 I2C 上本设备那一份占用.
  * 只置状态位, 服务任务在本轮 osDelay(最长 SERVICE_HUMITURE_PERIOD_MS)结束后

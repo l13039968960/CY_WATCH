@@ -78,7 +78,7 @@ typedef struct
 	/* pwm反初始化 */
 	int8_t (*pf_deinit)(void);
 
-	/* 背光: 0=关闭, 非0=点亮(具体占空比由底层实现) */
+	/* 背光调光: 亮度百分比 0~100(0=全灭), 具体怎么实现由底层决定 */
 	void (*pf_pwm_set)(uint8_t level);
 } st7789t3_pwm_interface_t;
 

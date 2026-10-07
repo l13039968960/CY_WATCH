@@ -188,7 +188,7 @@
      * - bitmaps with transparency may use ARGB8888
      */
     #define LV_DRAW_SW_SUPPORT_RGB565       1
-    #define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED       0
+    #define LV_DRAW_SW_SUPPORT_RGB565_SWAPPED       1
     #define LV_DRAW_SW_SUPPORT_RGB565A8     1
     #define LV_DRAW_SW_SUPPORT_RGB888       0
     #define LV_DRAW_SW_SUPPORT_XRGB8888     0
@@ -771,7 +771,8 @@
 
 #define LV_USE_LED 0
 
-#define LV_USE_LINE 0
+/* 2026-10-06: 开给表盘页的蓝牙标识 —— 蓝牙符号是折线, 矩形拼不出来 */
+#define LV_USE_LINE 1
 
 #define LV_USE_LIST 0
 
@@ -785,7 +786,7 @@
 
 #define LV_USE_SCALE 0
 
-#define LV_USE_SLIDER 0   /**< Requires: lv_bar */
+#define LV_USE_SLIDER 1   /**< Requires: lv_bar. menu 页背光滑条用 */
 
 #define LV_USE_SPAN 0
 #if LV_USE_SPAN
@@ -1035,7 +1036,9 @@
 
     /** 1: Show CPU usage and FPS count.
      *  - Requires `LV_USE_SYSMON = 1` */
-    #define LV_USE_PERF_MONITOR 1
+    /* 2026-10-06: 与下面的 MEM 一起关掉 —— 两块浮窗挂在 lv_layer_sys 上, 永远盖在
+       UI 最上层, 会压住表盘(尤其左上角的电量区). 要调试再开回 1 */
+    #define LV_USE_PERF_MONITOR 0
     #if LV_USE_PERF_MONITOR
         /* 2026-09-28: 由 BOTTOM_RIGHT 改 TOP_RIGHT —— 台架上下边缘被外物挡住,
            两块浮窗整体挪到上边缘(见下面 MEM_MONITOR_POS 同一条注释) */
@@ -1048,7 +1051,7 @@
     /** 1: Show used memory and memory fragmentation.
      *     - Requires `LV_USE_STDLIB_MALLOC = LV_STDLIB_BUILTIN`
      *     - Requires `LV_USE_SYSMON = 1`*/
-    #define LV_USE_MEM_MONITOR 1
+    #define LV_USE_MEM_MONITOR 0
     #if LV_USE_MEM_MONITOR
         /* 2026-09-28: 由 BOTTOM_LEFT 改 TOP_LEFT —— 下边缘被外物挡住, 看不见.
            注意这两个浮窗挂在 lv_layer_sys() 上(由 lv_display_create 自动创建,

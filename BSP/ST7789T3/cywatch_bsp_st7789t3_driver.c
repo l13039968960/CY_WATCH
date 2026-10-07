@@ -25,7 +25,8 @@
 
 /* 默认配置 */
 #define ST7789T3_DEFAULT_DIRECTION   st7789t3_dir_0   /* 默认 0° 竖屏 */
-#define ST7789T3_PIXEL_CHUNK_SIZE    4096             /* 单次DMA发送像素数(8KB缓冲); 原8192为腾RAM给LVGL内存池缩半, 仅影响DMA分块次数 */
+#define ST7789T3_PIXEL_CHUNK_SIZE    4096             /* 单次DMA发送像素数; 仅影响分块次数, 上限受HAL的uint16_t长度限制 */
+#define ST7789T3_FILL_CHUNK_PIXELS   512              /* 纯色填充的模板缓冲像素数(1KB); 内容只是同一像素重复N遍, 大小任意 */
 
 /* 时序(单位ms) */
 #define ST7789T3_RESET_LOW_MS        10      /* 复位低电平脉冲 */
@@ -191,22 +192,24 @@ static int8_t st7789t3_send_data(bsp_st7789t3_driver_t *p_st7789t3_instance,
 
 /******************************************************************************
  * @name    st7789t3_send_pixels
- * @brief   DC拉高, 将RGB565像素流转换为高字节先行字节流后经DMA发送
+ * @brief   DC拉高, 把像素字节流分块交给DMA发送
  * @param   p_st7789t3_instance[in]
- * @param   pdata[in] 像素缓冲区(RGB565)
+ * @param   pdata[in] 像素缓冲区
  * @param   size[in] 像素个数
  *
  * @return  0 success
  *         -1 st7789t3_instance null
  *         -2 spi dma write error
  *
- * @note    RGB565为16位小端存储, SPI需高字节先行, 此处手动交换后分块DMA发送;
- *          底层 spi_hal 的 pf_send_bytes_dma 内部完成启动+等待
+ * @note    ★入参必须是已按高字节先行排好的字节流★ —— 字节序由 LVGL 侧的
+ *          LV_COLOR_FORMAT_RGB565_SWAPPED 保证(见 lv_port_disp.c), 本函数原样发.
+ *          显示格式若改回 LV_COLOR_FORMAT_RGB565, 这里会静默送出反字节序.
+ * @note    分块只为绕开 HAL_SPI_Transmit_DMA 的 uint16_t 长度上限(65535 字节)
  *****************************************************************************/
 static int8_t st7789t3_send_pixels(bsp_st7789t3_driver_t *p_st7789t3_instance,
 								   uint16_t *pdata, uint32_t size)
 {
-	static uint8_t buf[ST7789T3_PIXEL_CHUNK_SIZE * 2];
+	uint8_t *p_bytes = (uint8_t *)pdata;
 	uint32_t sent = 0;
 
 	if (NULL == p_st7789t3_instance)
@@ -219,21 +222,14 @@ static int8_t st7789t3_send_pixels(bsp_st7789t3_driver_t *p_st7789t3_instance,
 	while (sent < size)
 	{
 		uint32_t n = size - sent;
-		uint32_t i;
 
 		if (n > ST7789T3_PIXEL_CHUNK_SIZE)
 		{
 			n = ST7789T3_PIXEL_CHUNK_SIZE;
 		}
 
-		/* RGB565高字节先行(STM32小端存储需手动交换) */
-		for (i = 0; i < n; i++)
-		{
-			buf[i * 2]     = (uint8_t)(pdata[sent + i] >> 8);
-			buf[i * 2 + 1] = (uint8_t)(pdata[sent + i] & 0xFF);
-		}
-
-		if (0 != p_st7789t3_instance->p_spi_interface->pf_send_bytes_dma(buf, n * 2))
+		if (0 != p_st7789t3_instance->p_spi_interface->pf_send_bytes_dma(
+					 &p_bytes[sent * 2], n * 2))
 		{
 			return -2;
 		}
@@ -1072,7 +1068,7 @@ static int8_t st7789t3_invert_off(bsp_st7789t3_driver_t *p_st7789t3_instance)
  * @name    st7789t3_set_backlight
  * @brief   设置背光亮度(透传给底层, 具体占空比由底层实现)
  * @param   p_st7789t3_instance[in]
- * @param   value[in] 背光值(0=关闭, 非0=点亮)
+ * @param   value[in] 亮度百分比 0~100(0=全灭)
  *
  * @return  0 success
  *         -1 st7789t3_instance null
@@ -1179,7 +1175,7 @@ static int8_t st7789t3_set_window(bsp_st7789t3_driver_t *p_st7789t3_instance,
  * @name    st7789t3_write_pixels
  * @brief   写入像素数据(需先调用pf_set_window发送RAMWR)
  * @param   p_st7789t3_instance[in]
- * @param   pdata[in] RGB565像素缓冲区
+ * @param   pdata[in] 像素缓冲区(须已是高字节先行, 见 st7789t3_send_pixels)
  * @param   size[in] 像素个数
  *
  * @return  0 success
@@ -1234,7 +1230,7 @@ static int8_t st7789t3_fill(bsp_st7789t3_driver_t *p_st7789t3_instance,
 							uint16_t x0, uint16_t y0,
 							uint16_t x1, uint16_t y1, uint16_t color)
 {
-	static uint8_t fill_buf[ST7789T3_PIXEL_CHUNK_SIZE * 2];
+	static uint8_t fill_buf[ST7789T3_FILL_CHUNK_PIXELS * 2];
 	uint8_t hi = (uint8_t)(color >> 8);
 	uint8_t lo = (uint8_t)(color & 0xFF);
 	uint32_t total;
@@ -1276,8 +1272,8 @@ static int8_t st7789t3_fill(bsp_st7789t3_driver_t *p_st7789t3_instance,
 
 	while (total > 0)
 	{
-		uint32_t chunk_pixels = (total > ST7789T3_PIXEL_CHUNK_SIZE) ?
-									ST7789T3_PIXEL_CHUNK_SIZE : total;
+		uint32_t chunk_pixels = (total > ST7789T3_FILL_CHUNK_PIXELS) ?
+									ST7789T3_FILL_CHUNK_PIXELS : total;
 
 		if (0 != p_st7789t3_instance->p_spi_interface->pf_send_bytes_dma(
 					fill_buf, chunk_pixels * 2))
@@ -1353,6 +1349,9 @@ static int8_t st7789t3_draw_point(bsp_st7789t3_driver_t *p_st7789t3_instance,
 	{
 		return -3;
 	}
+
+	/* write_pixels 收的是高字节先行的字节流, 把 host 序的 color 翻过来 */
+	color = (uint16_t)((color >> 8) | (color << 8));
 
 	if (0 != st7789t3_write_pixels(p_st7789t3_instance, &color, 1))
 	{

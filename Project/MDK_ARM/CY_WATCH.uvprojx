@@ -337,10 +337,10 @@
             <v6WtE>0</v6WtE>
             <v6Rtti>0</v6Rtti>
             <VariousControls>
-              <MiscControls>-Wno-padded -Wno-sign-conversion -Wno-implicit-int-conversion -Wno-declaration-after-statement -Wno-newline-eof -Wno-cast-qual -Wno-extra-semi-stmt -Wno-switch-enum -Wno-cast-align -Wno-disabled-macro-expansion -Wno-missing-variable-declarations -Wno-unreachable-code-return -Wno-assign-enum -Wno-unused-parameter -Wno-missing-prototypes -Wno-missing-noreturn -Wno-covered-switch-default -Wno-unused-function -Wno-comma -Wno-bad-function-cast -Wno-unreachable-code-break -Wno-unreachable-code -Wno-shorten-64-to-32 -Wno-format-nonliteral -fno-short-enums</MiscControls>
+              <MiscControls>-Wno-padded -Wno-sign-conversion -Wno-implicit-int-conversion -Wno-declaration-after-statement -Wno-newline-eof -Wno-cast-qual -Wno-extra-semi-stmt -Wno-switch-enum -Wno-cast-align -Wno-disabled-macro-expansion -Wno-missing-variable-declarations -Wno-unreachable-code-return -Wno-assign-enum -Wno-unused-parameter -Wno-missing-prototypes -Wno-missing-noreturn -Wno-covered-switch-default -Wno-unused-function -Wno-comma -Wno-bad-function-cast -Wno-unreachable-code-break -Wno-unreachable-code -Wno-shorten-64-to-32 -Wno-format-nonliteral -fno-short-enums -Wno-c11-extensions</MiscControls>
               <Define>USE_HAL_DRIVER,STM32F411xE</Define>
               <Undefine></Undefine>
-              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\GPIO;..\..\Core\DMA;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Core\PWM;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\BSP\Nordic;..\..\Core\UART;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\nordic;..\..\APP\Service\nordic\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger;..\..\BSP\MPU6050;..\..\BSP\MAX30102;..\..\BSP\AHT21;..\..\BSP\AT24C02;..\..\APP\Service\flags\adapter;..\..\APP\Service\attitude;..\..\APP\Service\attitude\adapter;..\..\APP\Service\attitude\ServiceFunction;..\..\APP\Service\heartrate;..\..\APP\Service\humiture;..\..\APP\Service\humiture\adapter;..\..\APP\Service\flags;..\..\APP\Service\heartrate\adapter;..\..\APP\Service\heartrate\ServiceFunction</IncludePath>
+              <IncludePath>..\..\Core;..\..\Core\Inc;..\..\Core\system;..\..\Core\system\delay;..\..\Core\system\uart;..\..\Core\system\Rtc;..\..\Core\system\Watchdog;..\..\Core\GPIO;..\..\Core\DMA;..\..\Core\EXTI;..\..\Core\SPI;..\..\Core\IIC;..\..\Core\ADC;..\..\Core\PWM;..\..\Driver\STM32F4xx_HAL_Driver\Inc;..\..\Driver\STM32F4xx_HAL_Driver\Inc\Legacy;..\..\Driver\CMSIS\Device\ST\STM32F4xx\Include;..\..\Driver\CMSIS\Include;..\..\BSP;..\..\BSP\ST7789T3;..\..\BSP\CST816T;..\..\BSP\W25Q64;..\..\BSP\ADKEY;..\..\BSP\Nordic;..\..\Core\UART;..\..\MIddleWares\FatFS\ff16\source;..\..\MIddleWares\FatFS\port;..\..\MIddleWares;..\..\MIddleWares\LVGL;..\..\MIddleWares\LVGL\lvgl;..\..\MIddleWares\LVGL\port;..\..\MIddleWares\LVGL\assets\fonts;..\..\MIddleWares\FreeRTOS;..\..\MIddleWares\FreeRTOS\include;..\..\MIddleWares\FreeRTOS\portable\GCC\ARM_CM4F;..\..\MIddleWares\FreeRTOS\CMSIS_RTOS_V2;..\..\MIddleWares\EasyAPP;..\..\MIddleWares\EasyAPP\inc;..\..\MIddleWares\EasyAPP\src;..\..\MIddleWares\EasyAPP\port;..\..\APP;..\..\APP\APP\DataModel;..\..\APP\Service\fatfs;..\..\APP\Service\fatfs\adapter;..\..\APP\Service\adkey;..\..\APP\Service\adkey\adapter;..\..\APP\Service\nordic;..\..\APP\Service\nordic\adapter;..\..\APP\Service\lvgl;..\..\APP\Service\lvgl\adapter;..\..\APP\Service\lvgl\ui;..\..\APP\Service\lvgl\ui_manger;..\..\BSP\MPU6050;..\..\BSP\MAX30102;..\..\BSP\AHT21;..\..\BSP\AT24C02;..\..\APP\Service\flags\adapter;..\..\APP\Service\attitude;..\..\APP\Service\attitude\adapter;..\..\APP\Service\attitude\ServiceFunction;..\..\APP\Service\heartrate;..\..\APP\Service\humiture;..\..\APP\Service\humiture\adapter;..\..\APP\Service\flags;..\..\APP\Service\heartrate\adapter;..\..\APP\Service\heartrate\ServiceFunction;..\..\APP\Service\watchdog;..\..\APP\Service\powermanager;..\..\APP\Service\powermanager\adapter;..\..\APP\Service\appcore;..\..\APP\Service\spo2</IncludePath>
             </VariousControls>
           </Cads>
           <Aads>
@@ -362,16 +362,16 @@
             </VariousControls>
           </Aads>
           <LDads>
-            <umfTarg>1</umfTarg>
+            <umfTarg>0</umfTarg>
             <Ropi>0</Ropi>
             <Rwpi>0</Rwpi>
             <noStLib>0</noStLib>
             <RepFail>1</RepFail>
-            <useFile>0</useFile>
+            <useFile>1</useFile>
             <TextAddressRange>0x08000000</TextAddressRange>
             <DataAddressRange>0x20000000</DataAddressRange>
             <pXoBase></pXoBase>
-            <ScatterFile></ScatterFile>
+            <ScatterFile>.\CY_WATCH.sct</ScatterFile>
             <IncludeLibs></IncludeLibs>
             <IncludeLibsPath></IncludeLibsPath>
             <Misc></Misc>
@@ -423,6 +423,11 @@
               <FileName>cywatch_rtc.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Core\system\Rtc\cywatch_rtc.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_watchdog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Core\system\Watchdog\cywatch_watchdog.c</FilePath>
             </File>
             <File>
               <FileName>rtstats.c</FileName>
@@ -593,6 +598,11 @@
               <FileName>stm32f4xx_hal_flash_ramfunc.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_flash_ramfunc.c</FilePath>
+            </File>
+            <File>
+              <FileName>stm32f4xx_hal_iwdg.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\Driver\STM32F4xx_HAL_Driver\Src\stm32f4xx_hal_iwdg.c</FilePath>
             </File>
             <File>
               <FileName>stm32f4xx_hal_uart.c</FileName>
@@ -3114,6 +3124,11 @@
               <FileType>1</FileType>
               <FilePath>..\..\APP\Service\attitude\ServiceFunction\AttitudeCalculation.c</FilePath>
             </File>
+            <File>
+              <FileName>StepDetection.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\attitude\ServiceFunction\StepDetection.c</FilePath>
+            </File>
           </Files>
         </Group>
         <Group>
@@ -3148,6 +3163,16 @@
               <FileName>SpO2.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\APP\Service\heartrate\ServiceFunction\SpO2.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/spo2</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_spo2.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\spo2\cywatch_service_spo2.c</FilePath>
             </File>
           </Files>
         </Group>
@@ -3188,6 +3213,76 @@
               <FileName>cywatch_service_flags.c</FileName>
               <FileType>1</FileType>
               <FilePath>..\..\APP\Service\flags\cywatch_service_flags.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/watchdog</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_watchdog.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\watchdog\cywatch_service_watchdog.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/powermanager</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_power.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\powermanager\cywatch_service_power.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/powermanager/adapter</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_adapter_power.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\powermanager\adapter\cywatch_adapter_power.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>Service/appcore</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_service_appcore.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\Service\appcore\cywatch_service_appcore.c</FilePath>
+            </File>
+          </Files>
+        </Group>
+        <Group>
+          <GroupName>APP/ui</GroupName>
+          <Files>
+            <File>
+              <FileName>cywatch_app_ui_home.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\APP\ui\cywatch_app_ui_home.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_app_ui_menu.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\APP\ui\cywatch_app_ui_menu.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_app_ui_heart.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\APP\ui\cywatch_app_ui_heart.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_app_ui_spo2.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\APP\ui\cywatch_app_ui_spo2.c</FilePath>
+            </File>
+            <File>
+              <FileName>cywatch_app_ui_ota.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>..\..\APP\APP\ui\cywatch_app_ui_ota.c</FilePath>
             </File>
           </Files>
         </Group>

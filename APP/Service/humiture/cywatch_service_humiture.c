@@ -15,7 +15,7 @@
  * EVT_HUMITURE_MEASURE: 触发一次测量 → 发布 EVT_SERVICE_HUMITURE_DATA
  *                       → osDelay(10s) 原地等下一拍
  * EVT_HUMITURE_ERROR:   发布 BUSY+ERROR, 1s 后自动回 INIT 重试(自愈)
- * EVT_HUMITURE_SLEEP:   休眠请求 → AHT21 软复位 + 放共享总线 → 停在 SLEEPING,
+ * EVT_HUMITURE_SLEEP:   休眠请求 → AHT21 软复位 + 放共享总线 → 停在 NODONE,
  *                       等 service_humiture_wakeup() 把状态改回 INIT
  *
  * @version V1.0
@@ -36,17 +36,26 @@
 
 /* 测量周期: AHT21 一次触发测量约 80ms, 器件自发热会让温度读数随采样率升高,
    手册建议间隔不低于 1s; 温湿度本身是分钟级缓变量, 且总线与姿态/心率共用 */
-#define SERVICE_HUMITURE_PERIOD_MS   (10000u)
+#define SERVICE_HUMITURE_PERIOD_MS   (5000u)
 
 /* 实例化重试次数上限 */
 #define SERVICE_HUMITURE_INST_RETRY  (5)
 /* 连续多少次读失败判为错误态(单次失败多为总线毛刺, 累积到 3 次才重初始化) */
 #define SERVICE_HUMITURE_ERROR_LIMIT (3)
 
-/* 睡眠态空转节拍(等 service_humiture_wakeup 改状态) */
-#define SERVICE_HUMITURE_SLEEP_TICK  (100u)
+/* 服务内部状态机取值, 不是页面收的事件 */
+typedef enum{
+    EVT_HUMITURE_INIT = 0,
+    EVT_HUMITURE_MEASURE,
+    EVT_HUMITURE_SLEEP,
+    EVT_HUMITURE_NODONE,
+    EVT_HUMITURE_ERROR,
+}State_Humiture_Service_t;
 
-static State_Humiture_Service_t ServiceState;
+/* 必须 volatile: 由 service_humiture_sleep/wakeup 从别的任务改, 而任务循环里所有调用
+   都是外部函数(改不了本 TU 的 static), -O2 下编译器会把非 volatile 的值缓存进寄存器,
+   导致状态切换永远读不到 */
+static volatile State_Humiture_Service_t ServiceState;
 
 /* 服务独占写的"最新帧": 发布前先填这里, 再把地址随事件发出去(0 拷贝, 生产者持有).
    注意每个测量周期被本任务覆盖, 消费侧应尽快读走 */
@@ -131,8 +140,7 @@ static void service_humiture_run(void *pvParameters)
             {
                 error_cnt = 0;
                 /* 发指针: 数据由本任务持续更新, 事件里不复制 */
-                x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_DATA,
-                                          0U, (void *)&s_latest_humiture);
+                x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_DATA, 0U, (void *)&s_latest_humiture);
 #if HUMITURE_SVC_LOOPBACK_TEST
                 /* MicroLIB 无 %f, 放大成整数打(与心率服务同一处理) */
                 log_printf("[HUMITURE] temp=%d humi=%d (均放大100倍)\r\n",
@@ -148,13 +156,15 @@ static void service_humiture_run(void *pvParameters)
             /* 睡: AHT21 软复位 + 释放共享 I2C 上本设备那一份占用 */
             x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_BUSY, 0, NULL);
             (void)humiture_bsp_hibernating();
-            ServiceState = EVT_HUMITURE_SLEEPING;
+            ServiceState = EVT_HUMITURE_NODONE;
             break;
 
-        case EVT_HUMITURE_SLEEPING:
+        case EVT_HUMITURE_NODONE:
+            x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_NOBUSY, 0, NULL);
+            x_port_easyapp_event_send(EVT_SERVICE_HUMITURE_NODONE, 0, NULL);
             /* 停在这里等 service_humiture_wakeup(); 唤醒回 EVT_HUMITURE_INIT
                重走构造 —— hibernating 已把器件与总线的占用都放掉了 */
-            osDelay(SERVICE_HUMITURE_SLEEP_TICK);
+            osDelay(1000);
             break;
 
         case EVT_HUMITURE_ERROR:
@@ -195,4 +205,12 @@ void service_humiture_wakeup(void)
 {
     /* 回 INIT 重走构造: hibernating 已把器件软复位并放掉了共享总线的占用 */
     ServiceState = EVT_HUMITURE_INIT;
+}
+
+void service_humiture_get_data(Humiture_Data_t *p_out)
+{
+    /* 锁调度器再整份拷贝: 温湿度任务每测量周期覆写 s_latest_humiture, 不锁会跨帧撕裂 */
+    (void)osKernelLock();
+    *p_out = s_latest_humiture;
+    (void)osKernelUnlock();
 }

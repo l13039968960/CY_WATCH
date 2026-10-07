@@ -22,8 +22,8 @@
  *   lv_watch_ui.c        UI入口: 管理器 + 模型数据(时钟/步数/心率) + 共用工具
  *                        (切页/手势条/拖拽方向) + lv_watch_ui_init()
  *   lv_watch_page_home.c 表盘页 0x0300 —— 时钟 + 三张健康卡片
- *   lv_watch_page_menu.c 菜单页 0x0301 —— 3x2 功能按钮(纯静态, 无定时器)
- *   lv_watch_page_heart.c心率页 0x0302 —— 数值 + 72点折线图
+ *   lv_watch_page_menu.c 菜单页 0x0301 —— 2x2 功能按钮 + 背光滑条(纯静态, 无定时器)
+ *   lv_watch_page_heart.c心率页 0x0302 —— 数值 + 30点折线图
  *   lv_watch_page_spo2.c 血氧页 0x0303 —— 红色圆按钮 + 三态状态机(最长3分钟)
  *   lv_watch_page_ota.c  OTA页  0x0304 —— 进度条 + **唯一一个**按钮. ★纯显示, 无状态★
  *                        (2026-09-22 起): 文案/可点性/色系/进度条全部由 app_core 经
@@ -164,7 +164,6 @@ watch_swipe_dir_t watch_swipe_track(lv_event_t *e);
    @note 用访问器而不是 extern 变量: 模型可能在推进中途被读(都在 lvgl 任务里,
          实际不会并发), 但更重要的是**只读语义要写在接口上** —— 页面不该推模型. */
 uint32_t watch_model_steps(void); /* 步数 */
-uint32_t watch_model_hr(void);    /* 心率值(BPM) */
 uint32_t watch_model_kcal(void);  /* 卡路里 */
 
 /* ---- 真实时间源(硬件 RTC) --------------------------------------------------

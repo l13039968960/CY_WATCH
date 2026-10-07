@@ -97,6 +97,8 @@ static int8_t iic_writereg(uint8_t dev_addr, uint8_t reg, uint8_t data)
 
 int8_t attitudecalculation_bsp_inst(void)
 {
+    int8_t ret = 0;
+
     /* 先占住共享总线: 下面的 mpu6050_inst 里就有 I2C 读写(WHO_AM_I) */
     iic_claim();
 
@@ -114,7 +116,9 @@ int8_t attitudecalculation_bsp_inst(void)
 
     mpu6050_delay_instance.pf_delay = mpu6050_delay_cb;
 
-    return mpu6050_inst(&mpu6050_instance, &mpu6050_iic_interface_instance, &mpu6050_yield_instance, &mpu6050_delay_instance);
+    ret = mpu6050_inst(&mpu6050_instance, &mpu6050_iic_interface_instance, &mpu6050_yield_instance, &mpu6050_delay_instance);
+
+    return ret;
 }
 
 int8_t attitudecalculation_bsp_deinst(void)

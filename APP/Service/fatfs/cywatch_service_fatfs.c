@@ -536,19 +536,68 @@ static int8_t fatfs_selftest(void)
 }
 
 /* ===== 一次性诊断开关 =====
-   1 = 本次上电先"整片擦除 + f_mkfs", 再走正常挂载 + 自检.
-   目的: 自检第 6 步发现根目录首 4096B(一个擦除块)是 0xFF 空白, 128 个幻影目录项
-   排在两个真实文件前面. 整片擦回全 0xFF 再格式化, 就能区分是"卷里残留的旧数据"
-   还是"f_mkfs 的根目录零填充真的漏了第一块". ★查完改回 0★
-   代价: 整片擦除典型 20s / 最大 100s, 期间不能断电
-   @note 结论(2026-10-02 板上验证): 置 1 跑过一次后幻影项全部消失, 根目录只剩 2 项.
-         说明 f_mkfs 的零填充是好的 —— 那 128 个幻影项是**旧卷**留在 flash 上的状态
-         (根目录头一个擦除块仍是空白 0xFF), 不是当前格式化路径的缺陷. */
+   1 = 本次上电先"仅 f_mkfs 重建文件系统", 再走正常挂载 + 自检.
+   为什么要: 芯片上那份卷是半成品 —— VBR 有效(挂载因此成功, 固件永不进格式化分支),
+   但 FAT(sector 64) 与根目录(sector 72) 全是 0xFF, 于是自检第 1 步必然 fr=0 且写入
+   0 字节(FAT 里没有空闲簇可分配). 手动跑一次格式化自愈, 同时由临时探针定性.
+   模式取"仅 f_mkfs"(service_fatfs_format(0U)): 这两处所在擦除块现在全是 0xFF, 直接
+   编程即可, 不需要先擦; 而"整片擦除"那一档会连 0~32255 的 Bootloader/OTA 裸偏移区
+   一起端掉(2026-10-02 那次跑的就是整片擦).
+   @note 当前 0 = 未启用. 下面那两个探针在同一条件里, 跟着一起编译掉 —— 不占 RAM、
+         也不改任何行为. 想再跑一次就改 1. ★查完删★ */
 #define FATFS_BOOT_ERASE_CHIP_TEST  0
+
+#if (0 != FATFS_BOOT_ERASE_CHIP_TEST)
+/* ===== 临时只读探针: 格式化前后各看一眼扇区 0 与 FAT. ★查完删★ =====
+   扇区 0 的判点在三处偏移, 只看 0 起的前 16B 看不出名堂, 所以整扇区读 512B:
+     偏移 0   起跳字节(EB/E9 = 引导扇区; 别的 = Bootloader/OTA 自己的头)
+     偏移 446 分区表第 1 项(sys = 类型, StLba = 分区起始, 本卷应为 63)
+     偏移 510 0x55AA 签名
+   为什么值得看: 卷能挂上就说明 find_volume 走的是分区路径(ff.c:3444-3449), 即扇区 0
+   **必须**已经是 MBR; 而 f_mkfs 把 MBR 放在**最后**写(ff.c:6519 -> f_fdisk), 排在 FAT
+   与根目录之后. "有 MBR" 与 "FAT 全 FF" 同时成立是矛盾的: 要么 MBR 是更早留下的化石,
+   要么 FAT 那几次写被丢了. 格式化前后各读一次就能把这两个可能分开 */
+static void fatfs_probe_sector0(const char *p_tag)
+{
+    static uint8_t s_raw[512];
+
+    if (0 != storage_bsp_w25q64_read(0UL, s_raw, sizeof(s_raw)))
+    {
+        log_printf("[PROBE] %s 扇区0 读失败\r\n", p_tag);
+        return;
+    }
+
+    /* MBR_Table=446, PTE_System=+4, PTE_StLba=+8(小端 4 字节), BS_55AA=510 */
+    log_printf("[PROBE] %s 扇区0: 起跳 %02X %02X %02X %02X | Pte0 sys=%02X StLba=%lu | 签名 %02X%02X\r\n",
+               p_tag, s_raw[0], s_raw[1], s_raw[2], s_raw[3], s_raw[450],
+               (unsigned long)((uint32_t)s_raw[454] | ((uint32_t)s_raw[455] << 8) |
+                               ((uint32_t)s_raw[456] << 16) | ((uint32_t)s_raw[457] << 24)),
+               s_raw[510], s_raw[511]);
+}
+
+/* FAT 首扇区(字节 32768 = sector 64). f_mkfs 逐扇区写 0(ff.c:6475-6492), 头三字节应为 F8 FF FF */
+static void fatfs_probe_fat(void)
+{
+    uint8_t  raw[16];
+    uint32_t addr = 0x8000UL;
+
+    if (0 != storage_bsp_w25q64_read(addr, raw, sizeof(raw)))
+    {
+        log_printf("[PROBE] 格式化后 FAT 读失败\r\n");
+        return;
+    }
+
+    log_printf("[PROBE] 格式化后 FAT@%lu: %02X %02X %02X %02X %02X %02X %02X %02X "
+               "%02X %02X %02X %02X %02X %02X %02X %02X\r\n",
+               (unsigned long)addr,
+               raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+               raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+}
+#endif /* FATFS_BOOT_ERASE_CHIP_TEST */
 
 /******************************************************************************
  * @name    service_fatfs_boot_task
- * @brief   一次性任务体: (诊断擦除 +) 挂载 + 自检, 然后退出
+ * @brief   一次性任务体: (诊断格式化 +) 挂载 + 自检, 然后退出
  * @param   p_arg[in] 未使用
  * @return  无(末尾 osThreadExit)
  *
@@ -562,9 +611,17 @@ static void service_fatfs_boot_task(void *p_arg)
     (void)p_arg;
 
 #if (0 != FATFS_BOOT_ERASE_CHIP_TEST)
-    if (SERVICE_FATFS_OK != service_fatfs_format(1U))
     {
-        log_printf("[FS] 诊断: 整片擦除 + f_mkfs 失败, 仍按原流程继续\r\n");
+        int8_t fmt_ret;
+
+        fatfs_probe_sector0("格式化前");
+        fmt_ret = service_fatfs_format(0U);
+        if (SERVICE_FATFS_OK != fmt_ret)
+        {
+            log_printf("[FS] 诊断: 仅 f_mkfs 失败 rc=%d, 仍按原流程继续\r\n", (int)fmt_ret);
+        }
+        fatfs_probe_sector0("格式化后");
+        fatfs_probe_fat();
     }
 #endif
 

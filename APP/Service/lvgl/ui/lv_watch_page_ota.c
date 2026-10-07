@@ -606,8 +606,6 @@ static void watch_ota_create(page_base_t *p_page)
 
 	/* 按当前槽画第一帧 —— app_core 在本页还不存在时投的值, 到这里才第一次露面 */
 	watch_ota_sync_now();
-
-	log_printf("WATCH page create ->OTA\r\n");
 }
 
 /******************************************************************************
@@ -637,8 +635,6 @@ static void watch_ota_destroy(page_base_t *p_page)
 	p_ota->p_btn = NULL;
 	p_ota->p_lbl = NULL;
 	p_ota->applied_valid = 0u;	/* 下次重建要强制全写 */
-
-	log_printf("WATCH page destroy ->OTA\r\n");
 }
 
 /******************************************************************************

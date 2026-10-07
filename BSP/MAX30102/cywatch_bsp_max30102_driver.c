@@ -356,13 +356,13 @@ static int8_t max30102_deinst(struct bsp_max30102_driver *p_max30102_instance)
 
 /******************************************************************************
  * @name    max30102_init
- * @brief   MAX30102初始化: 软复位、配置FIFO、SpO2采样参数、LED电流、
- *          复位FIFO指针、进入SpO2模式
+ * @brief   MAX30102初始化: 软复位、关中断源、配置FIFO、SpO2采样参数、
+ *          LED电流、复位FIFO指针、进入HR模式
  * @param   p_max30102_instance[in]
  *
  * @return  0 success
  *         -1 max30102_instance null
- *         -2 device reset failed
+ *         -2 device reset / interrupt source disable failed
  *         -3 fifo config failed
  *         -4 spo2 config failed
  *         -5 led1 current config failed
@@ -392,7 +392,18 @@ static int8_t max30102_init(struct bsp_max30102_driver *p_max30102_instance)
 	/* 等待复位完成 (RESET位复位完成后自动清零) */
 	p_max30102_instance->p_delay_interface->pf_delay(MAX30102_STARTUP_DELAY_MS);
 
-	/* 2. 配置FIFO: 采样平均 + 循环覆盖 */
+	/* 2. 关器件中断源: 复位默认值是 0xC0(A_FULL_EN|PPG_RDY_EN 都开), 不清掉的话
+	   下面第7步切进HR采样模式时 INT 立刻拉低; 而 A_FULL 是"读 INTR_STATUS_1 才清"
+	   的锁存标志, PA3 又只认下降沿 —— 线锁死在低电平后就再也等不到中断了 */
+	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
+							 MAX30102_INTR_ENABLE_1,
+							 0x00);
+	if (0 != ret)
+	{
+		return -2;
+	}
+
+	/* 3. 配置FIFO: 采样平均 + 循环覆盖 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_FIFO_CONFIG,
 							 MAX30102_DEFAULT_SMP_AVE |
@@ -402,7 +413,7 @@ static int8_t max30102_init(struct bsp_max30102_driver *p_max30102_instance)
 		return -3;
 	}
 
-	/* 3. 配置SpO2: ADC量程 + 采样率 + LED脉宽 */
+	/* 4. 配置SpO2: ADC量程 + 采样率 + LED脉宽 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_SPO2_CONFIG,
 							 MAX30102_DEFAULT_ADC_RANGE |
@@ -413,7 +424,7 @@ static int8_t max30102_init(struct bsp_max30102_driver *p_max30102_instance)
 		return -4;
 	}
 
-	/* 4. 配置LED电流 */
+	/* 5. 配置LED电流 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_LED1_PA,
 							 MAX30102_DEFAULT_LED1_PA);
@@ -430,7 +441,7 @@ static int8_t max30102_init(struct bsp_max30102_driver *p_max30102_instance)
 		return -6;
 	}
 
-	/* 5. 复位FIFO读写指针 */
+	/* 6. 复位FIFO读写指针 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_FIFO_WR_PTR, 0x00);
 	if (0 != ret)
@@ -445,7 +456,7 @@ static int8_t max30102_init(struct bsp_max30102_driver *p_max30102_instance)
 		return -8;
 	}
 
-	/* 6. 进入HR默认模式 */
+	/* 7. 进入HR默认模式 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_MODE_CONFIG,
 							 MAX30102_DEFAULT_MODE);
@@ -686,8 +697,9 @@ static int8_t max30102_change_to_spo2(struct bsp_max30102_driver *p_max30102_ins
  * @brief   使能FIFO近满(A_FULL)中断
  * @param   p_max30102_instance[in]
  *
- * @note    使能器件内部A_FULL中断源(INTR_ENABLE_1 bit7), 并通过
- *          interrupt_interface 使能底层外部中断(EXTI/GPIO); 底层触发后由
+ * @note    先读 INTR_STATUS_1 清掉锁存的A_FULL(把INT线放回高, 否则PA3的下降沿
+ *          永远不会再来), 再使能器件内部A_FULL中断源(INTR_ENABLE_1 bit7), 最后
+ *          通过 interrupt_interface 使能底层外部中断(EXTI/GPIO); 底层触发后由
  *          本驱动的 pf_interrupt_cb(max30102_irq_cb) 处理(释放信号量/置标志)。
  *
  * @return  0 success
@@ -698,6 +710,7 @@ static int8_t max30102_change_to_spo2(struct bsp_max30102_driver *p_max30102_ins
 static int8_t max30102_enable_FIFO_FULL_interrupt(struct bsp_max30102_driver *p_max30102_instance)
 {
 	int8_t ret = 0;
+	uint8_t status = 0;
 	max30102_interrupt_interface_t *p_interrupt;
 
 	if (NULL == p_max30102_instance)
@@ -714,7 +727,14 @@ static int8_t max30102_enable_FIFO_FULL_interrupt(struct bsp_max30102_driver *p_
 			p_max30102_instance->p_timebase_interface->pf_get_time();
 	}
 
-	/* 1. 使能器件内部FIFO近满(A_FULL)中断 */
+	/* 1. 先清锁存状态再开中断源: A_FULL 要读 INTR_STATUS_1 才清, 上电/热复位后它可能
+	   已经是1(INT线一直低), 那个下降沿早被用掉了. 先读一次把线放回高, 下面第2步使能
+	   才会有新的下降沿可捕获. 读失败不单独判错: 紧接着的写会先返回 -2 */
+	(void)p_max30102_instance->p_iic_interface->pf_readreg(MAX30102_I2C_ADDR,
+							 MAX30102_INTR_STATUS_1,
+							 &status, 1);
+
+	/* 2. 使能器件内部FIFO近满(A_FULL)中断 */
 	ret = p_max30102_instance->p_iic_interface->pf_writereg(MAX30102_I2C_ADDR,
 							 MAX30102_INTR_ENABLE_1,
 							 MAX30102_INTR1_A_FULL_EN);
@@ -723,7 +743,7 @@ static int8_t max30102_enable_FIFO_FULL_interrupt(struct bsp_max30102_driver *p_
 		return -2;
 	}
 
-	/* 2. 使能底层外部中断 */
+	/* 3. 使能底层外部中断 */
 	p_interrupt = p_max30102_instance->p_interrupt_interface;
 	if (NULL == p_interrupt || NULL == p_interrupt->pf_enable_interrupt)
 	{

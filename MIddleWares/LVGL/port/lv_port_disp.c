@@ -21,7 +21,7 @@
  *   → 点亮背光 → lv_display_create(240,280) + RGB565 + PARTIAL单缓冲40行.
  * lcd_flush_cb():
  *   LVGL脏区 → adapter set_window(含端点, 驱动内部+Y20面板偏移)
- *            → adapter write_pixels(驱动内部RGB565高字节先行交换+分块DMA, 阻塞)
+ *            → adapter write_pixels(分块DMA, 阻塞; 字节序已由色格式排好)
  *            → lv_display_flush_ready.
  *
  * @version V1.0
@@ -47,7 +47,7 @@
 /* 显示尺寸与刷新缓冲(与驱动默认方向 dir_0 竖屏一致) */
 #define LV_LCD_HOR_RES   240
 #define LV_LCD_VER_RES   280
-#define LV_LCD_BUF_LINES 20   /* 240*40*2 = 19.2KB 部分渲染单缓冲 */
+#define LV_LCD_BUF_LINES 40   /* 240*40*2 = 19.2KB 部分渲染单缓冲 */
 
 /* LVGL渲染缓冲: 16字节对齐(LVGL 9要求), PARTIAL单缓冲 */
 static uint8_t s_disp_buf[LV_LCD_HOR_RES * LV_LCD_BUF_LINES * 2]
@@ -63,7 +63,7 @@ static uint8_t s_disp_buf[LV_LCD_HOR_RES * LV_LCD_BUF_LINES * 2]
  * @return  无
  *
  * @note    ST7789 adapter/驱动内部已处理: 面板+Y20偏移(set_window)与
- *          高字节先行字节交换(write_pixels), 此处勿再交换字节序;
+ *          高字节先行字节序(由 LV_COLOR_FORMAT_RGB565_SWAPPED 直接渲染出来), 此处勿再交换;
  *          lv_display_flush_ready 必须调用, 漏调会冻结UI刷新
  *****************************************************************************/
 static void lcd_flush_cb(lv_display_t *p_disp, const lv_area_t *p_area,
@@ -104,8 +104,8 @@ int8_t lv_port_disp_init(void)
 		return -1;
 	}
 
-	/* 2. 点亮背光 */
-	(void)lvgl_bsp_disp_set_backlight(1);
+	/* 2. 点亮背光(100 = 满亮度) */
+	(void)lvgl_bsp_disp_set_backlight(100);
 
 	/* 3. 创建LVGL显示: 240x280 RGB565, PARTIAL单缓冲40行(阻塞flush, 双缓冲无收益) */
 	p_disp = lv_display_create(LV_LCD_HOR_RES, LV_LCD_VER_RES);
@@ -115,7 +115,7 @@ int8_t lv_port_disp_init(void)
 		return -2;
 	}
 
-	lv_display_set_color_format(p_disp, LV_COLOR_FORMAT_RGB565);
+	lv_display_set_color_format(p_disp, LV_COLOR_FORMAT_RGB565_SWAPPED);
 	lv_display_set_buffers(p_disp, s_disp_buf, NULL, sizeof(s_disp_buf),
 						   LV_DISPLAY_RENDER_MODE_PARTIAL);
 	lv_display_set_flush_cb(p_disp, lcd_flush_cb);

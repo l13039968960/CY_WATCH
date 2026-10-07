@@ -16,10 +16,13 @@
  *
  * call adc_driver_inst() to construct, then use function pointers.
  *
- * @version V1.0
+ * @version V2.0
  *
  * @note 1 tab == 4 spaces!
  *
+ * @note V2(2026-10-03) 改成可共享: 通道与采样时间从 cfg 挪到 pf_read 的入参,
+ *       引脚交给各调用方自己用 gpio_hal 配, 并加上互斥量接口 —— 一个 ADC1
+ *       实例服务多个设备, 每个设备各用各的通道. 细节见 adc_hal.h 的头注释.
  *****************************************************************************/
 #include "adc_hal.h"
 
@@ -27,9 +30,49 @@
 static int8_t adc_deinst(adc_driver_t *p_adc_instance);
 static int8_t adc_init(adc_driver_t *p_adc_instance);
 static int8_t adc_deinit(adc_driver_t *p_adc_instance);
-static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value);
+static int8_t adc_read(adc_driver_t *p_adc_instance,
+					   uint32_t channel, uint32_t sampling_time,
+					   uint16_t *p_value);
+
+/* 互斥量 (未注入 p_mutex_interface 时为空操作) */
+static int8_t adc_mutex_lock(adc_driver_t *p_adc_instance);
+static void adc_mutex_unlock(adc_driver_t *p_adc_instance);
 
 /********************************* 私有辅助 *********************************/
+
+/******************************************************************************
+ * @name    adc_mutex_lock
+ * @brief   拿共享 ADC 的锁(未注入互斥量接口时直接放行)
+ * @param   p_adc_instance[in]
+ *
+ * @return  0 success / -1 拿锁失败
+ *****************************************************************************/
+static int8_t adc_mutex_lock(adc_driver_t *p_adc_instance)
+{
+	if (NULL == p_adc_instance->cfg.p_mutex_interface)
+	{
+		return 0;
+	}
+
+	return p_adc_instance->cfg.p_mutex_interface->pf_lock();
+}
+
+/******************************************************************************
+ * @name    adc_mutex_unlock
+ * @brief   放共享 ADC 的锁(未注入互斥量接口时什么都不做)
+ * @param   p_adc_instance[in]
+ *
+ * @return  无
+ *****************************************************************************/
+static void adc_mutex_unlock(adc_driver_t *p_adc_instance)
+{
+	if (NULL == p_adc_instance->cfg.p_mutex_interface)
+	{
+		return;
+	}
+
+	(void)p_adc_instance->cfg.p_mutex_interface->pf_unlock();
+}
 
 /******************************************************************************
  * @name    adc_clk_enable
@@ -62,24 +105,22 @@ static void adc_clk_disable(ADC_TypeDef *p_adc)
 
 /******************************************************************************
  * @name    adc_init
- * @brief   ADC驱动初始化: 初始化ADC外设 + 配规则组通道
+ * @brief   ADC驱动初始化: 开外设时钟 + 初始化ADC外设
  * @param   p_adc_instance[in]
  *
  * @return  0 success
  *         -1 adc_instance null
  *         -2 HAL_ADC_Init error
- *         -3 通道配置失败
  *
- * @note    ADC 的时钟与引脚都在本函数里配, 不走 ST 的 MSP 回调
- *          (HAL_ADC_MspInit 未实现, HAL 自带的那个空弱函数不会动 GPIO).
+ * @note    ADC 的时钟在本函数里配, 不走 ST 的 MSP 回调(HAL_ADC_MspInit 未实现).
+ *          **引脚不在这里**: 它跟着通道走, 归各自的调用方用 gpio_hal 配
+ *          (不配成模拟输入的话该通道只是读数不准, 不会报错).
  *
  * @note    引用计数: ref_count 由 0→1 时才真正初始化外设, 已有使用者时只累加计数
- *          (同一实例被重复init不会把外设重配一遍)。
+ *          (多个设备共用 ADC1 时, 后来的不会再 HAL_ADC_Init 一遍把先来的配置冲掉)。
  *****************************************************************************/
 static int8_t adc_init(adc_driver_t *p_adc_instance)
 {
-	ADC_ChannelConfTypeDef sConfig = {0};
-
 	if (NULL == p_adc_instance)
 	{
 		return -1;
@@ -88,27 +129,16 @@ static int8_t adc_init(adc_driver_t *p_adc_instance)
 	/* 首个使用者才真正初始化ADC外设 */
 	if (0 == p_adc_instance->ref_count)
 	{
-		/* 时钟与引脚都在这里配: 后面 HAL_ADC_Init 内部那次 HAL_ADC_MspInit
-		   是空弱函数, 不会再动 GPIO —— 所以这一步不能省, 也不能挪到后面 */
+		/* 只开外设时钟, 不碰任何 GPIO: 后面 HAL_ADC_Init 内部那次
+		   HAL_ADC_MspInit 是空弱函数, 不会再动 GPIO */
 		adc_clk_enable(p_adc_instance->cfg.p_adc_base);
-
-		(void)p_adc_instance->gpio.pf_init(&p_adc_instance->gpio);
 
 		if (HAL_OK != HAL_ADC_Init(&p_adc_instance->hadc))
 		{
 			return -2;
 		}
 
-		/* 单通道: 规则组只有一项, Rank固定为1 */
-		sConfig.Channel = p_adc_instance->cfg.channel;
-		sConfig.Rank = 1;
-		sConfig.SamplingTime = p_adc_instance->cfg.sampling_time;
-		sConfig.Offset = 0;
-		if (HAL_OK != HAL_ADC_ConfigChannel(&p_adc_instance->hadc, &sConfig))
-		{
-			return -3;
-		}
-
+		/* 这里**不配通道**: 通道是 pf_read 的入参, 每采一次覆盖一次 */
 		p_adc_instance->init_state = 1;
 	}
 
@@ -125,11 +155,11 @@ static int8_t adc_init(adc_driver_t *p_adc_instance)
  * @return  0 success
  *         -1 adc_instance null
  *
- * @note    HAL_ADC_DeInit 回调的 MspDeInit 是空弱函数, 引脚与时钟由本函数自己收尾.
- * @note    本函数有**低功耗语义**: 引脚不能只 DeInit 到复位态 ——
- *          F4 的 GPIO 复位值是**浮空输入**(不是模拟), 施密特触发器还开着, 悬空脚
- *          会随噪声来回翻转、白耗电。要再配成模拟输入才算真的关掉输入缓冲。
- * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设。
+ * @note    HAL_ADC_DeInit 回调的 MspDeInit 是空弱函数, 只有时钟由本函数收尾.
+ * @note    **引脚不由本函数收尾**: 每个调用方在 release 时自己把引脚 DeInit →
+ *          模拟输入(F4 复位态是浮空输入, 施密特触发器还开着, 悬空脚会白耗电;
+ *          顺序不能反, 详见 gpio_hal).
+ * @note    引用计数: 每个使用者退出时减1, 减到0才真正关闭外设与时钟。
  *****************************************************************************/
 static int8_t adc_deinit(adc_driver_t *p_adc_instance)
 {
@@ -148,9 +178,6 @@ static int8_t adc_deinit(adc_driver_t *p_adc_instance)
 	if (0 == p_adc_instance->ref_count)
 	{
 		HAL_ADC_DeInit(&p_adc_instance->hadc);
-
-		/* 引脚收尾(DeInit → 模拟输入, 顺序在 gpio_hal 里) */
-		(void)p_adc_instance->gpio.pf_deinit(&p_adc_instance->gpio);
 
 		/* ★只关 ADC 时钟★: 端口上还有 UART/EXTI/IIC 共用, 端口时钟不能关 */
 		adc_clk_disable(p_adc_instance->cfg.p_adc_base);
@@ -202,23 +229,37 @@ static int8_t adc_deinst(adc_driver_t *p_adc_instance)
 
 /******************************************************************************
  * @name    adc_read
- * @brief   采一次: 启动转换 -> 等待完成 -> 取码值
+ * @brief   采一次: 按给定通道重配规则组 -> 启动转换 -> 等待完成 -> 取码值
  * @param   p_adc_instance[in]
- * @param   p_value[out] 转换结果(0..ADC_FULL_SCALE)
+ * @param   channel[in]       本次要采的通道(ADC_CHANNEL_x)
+ * @param   sampling_time[in] 采样时间(ADC_SAMPLETIME_xCycles_x)
+ * @param   p_value[out]      转换结果(0..ADC_FULL_SCALE)
  *
  * @return  0 success
  *         -1 adc_instance null
  *         -2 p_value null
  *         -3 未初始化(pf_init 没调过)
- *         -4 HAL_ADC_Start error
- *         -5 转换超时
+ *         -4 通道配置失败
+ *         -5 HAL_ADC_Start error
+ *         -6 转换超时
+ *         -7 拿不到互斥量
+ *
+ * @note    **整段持锁**: 换通道改的是 ADC1 外设级的规则组寄存器, 结果也在同一个
+ *          ADC_DR 里 —— 两个任务交错进来会读成对方那个通道的值, 且察觉不到。
  *
  * @note    超时会返回而不是死等: ADC没启动(时钟没使能/引脚没配成模拟)时
  *          HAL_ADC_PollForConversion 会一直返回BUSY, 有超时才能暴露出来。
  *          超时路径上也调了 Stop, 免得ADC停在运行态影响下一次采集。
+ *
+ * @note    引脚配不配、配得对不对本层无从判断: 引脚归调用方, 没配成模拟输入时
+ *          读数会飘, 不会报错。
  *****************************************************************************/
-static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value)
+static int8_t adc_read(adc_driver_t *p_adc_instance,
+					   uint32_t channel, uint32_t sampling_time,
+					   uint16_t *p_value)
 {
+	ADC_ChannelConfTypeDef sConfig = {0};
+
 	if (NULL == p_adc_instance)
 	{
 		return -1;
@@ -234,20 +275,40 @@ static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value)
 		return -3;
 	}
 
+	if (0 != adc_mutex_lock(p_adc_instance))
+	{
+		return -7;
+	}
+
+	/* 每次读都重配通道: 规则组只有一项(Rank=1), 换通道就是把它整个换掉 */
+	sConfig.Channel      = channel;
+	sConfig.Rank         = 1;
+	sConfig.SamplingTime = sampling_time;
+	sConfig.Offset       = 0;
+	if (HAL_OK != HAL_ADC_ConfigChannel(&p_adc_instance->hadc, &sConfig))
+	{
+		adc_mutex_unlock(p_adc_instance);
+		return -4;
+	}
+
 	if (HAL_OK != HAL_ADC_Start(&p_adc_instance->hadc))
 	{
-		return -4;
+		adc_mutex_unlock(p_adc_instance);
+		return -5;
 	}
 
 	if (HAL_OK != HAL_ADC_PollForConversion(&p_adc_instance->hadc, ADC_POLL_TIMEOUT_MS))
 	{
 		(void)HAL_ADC_Stop(&p_adc_instance->hadc);
-		return -5;
+		adc_mutex_unlock(p_adc_instance);
+		return -6;
 	}
 
 	*p_value = (uint16_t)HAL_ADC_GetValue(&p_adc_instance->hadc);
 
 	(void)HAL_ADC_Stop(&p_adc_instance->hadc);
+
+	adc_mutex_unlock(p_adc_instance);
 
 	return 0;
 }
@@ -267,7 +328,6 @@ static int8_t adc_read(adc_driver_t *p_adc_instance, uint16_t *p_value)
  *         -1 adc_instance null
  *         -2 cfg null
  *         -3 adc base null
- *         -4 gpio 实例构造失败
  *****************************************************************************/
 int8_t adc_driver_inst(adc_driver_t *p_adc_instance,
 					   adc_cfg_t *p_cfg)
@@ -285,11 +345,6 @@ int8_t adc_driver_inst(adc_driver_t *p_adc_instance,
 	if (NULL == p_cfg->p_adc_base)
 	{
 		return -3;
-	}
-
-	if (0 != gpio_driver_inst(&p_adc_instance->gpio, &p_cfg->gpio))
-	{
-		return -4;
 	}
 
 	/* 加载硬件配置 */

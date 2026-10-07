@@ -19,7 +19,7 @@
  * Processing flow:
  *
  * 1. lvgl_bsp_disp_inst(): 填 SPI/GPIO/delay/pwm 四个接口(每个接口都带 pf_init/
- *    pf_deinit, 四根控制脚 DC/CS/RST/背光 的 GPIO 配置在 gpio 的 pf_init 里)
+ *    pf_deinit, DC/CS/RST 三根控制脚的 GPIO 配置在 gpio 的 pf_init 里)
  *    → st7789t3_inst()(内部依次回调各外设 init, 再做硬件复位与面板寄存器初始化);
  * 2. 之后每次画面刷新: lvgl_bsp_disp_set_window() + _write_pixels();
  * 3. lvgl_bsp_disp_deinst() 析构.
@@ -32,6 +32,9 @@
  *       应用层 main.c 创建, 本 adapter 只 extern 引用(与 W25Q64 adapter 引用
  *       `spi2_instance` 同一写法), 不自己再建总线.
  *
+ * @note 背光(PA1)改走 TIM2_CH2 的 PWM 调光: 这路定时器只有背光一个使用者, 所以
+ *       pwm_driver_t 实例由**本层自己建**并自己管生灭, 不上交 main.c.
+ *
  * @note `lvgl_bsp_disp_inst()` 内含 osDelay(复位/上电等待) → 必须在
  *       osKernelStart() 之后的**任务上下文**调用, 不能放在 main 启动内核之前.
  *
@@ -43,13 +46,18 @@
 
 #include "cywatch_bsp_st7789t3_driver.h"
 #include "spi_hal.h" /* spi_driver_t: 硬件 SPI1 总线, 由 main.c 提供 */
+#include "pwm_hal.h"           /* pwm_driver_t: 背光调光(TIM2_CH2 = PA1) */
 #include "main.h"              /* LCD_DC_Pin / LCD_CS_Pin / LCD_RST_Pin / LCD_PWR_Pin */
 #include "cmsis_os2.h"         /* osDelay */
 
 /***********************************Defines************************************/
-/* 背光: PA1 为开/关型, 不做 PWM 调光(与 main.h 的 LCD_PWR_Pin 一致) */
-#define ST7789T3_BL_PORT  LCD_PWR_GPIO_Port
-#define ST7789T3_BL_PIN   LCD_PWR_Pin
+/* 背光调光 PWM: PA1 = TIM2_CH2(AF1), 1kHz, 占空比 = 亮度百分比 0~100
+   @note TIM2 的 PSC/ARR 由 pwm_hal 按 freq_hz 自己算, 这里只给输入时钟:
+         APB1 50MHz × 2 = 100MHz(与 main.c 的 pwm_instance 同源) */
+#define ST7789T3_BL_TIM        TIM2
+#define ST7789T3_BL_TIM_CLK_HZ (100000000U)
+#define ST7789T3_BL_FREQ_HZ    (1000U)
+#define ST7789T3_BL_CHANNEL    PWM_CHANNEL_2
 /***********************************Defines************************************/
 
 /**********************************Declaring***********************************/
@@ -59,8 +67,9 @@ static bsp_st7789t3_driver_t st7789t3_instance;
 extern spi_driver_t lcd_spi_instance;
 
 /* ============================= 引脚配置 ============================= */
-/* DC/CS/RST/背光 每根线一个 gpio 实例 —— 必须各自独立: 合成一个掩码写就变成
-   三根线同时翻转. 速度取 LOW: 它们只在命令间/帧间翻转, 不跟 SCK 的边沿 */
+/* DC/CS/RST 每根线一个 gpio 实例 —— 必须各自独立: 合成一个掩码写就变成
+   三根线同时翻转. 速度取 LOW: 它们只在命令间/帧间翻转, 不跟 SCK 的边沿
+   (背光 PA1 不在这里: 它归下面的 PWM 实例管) */
 static gpio_cfg_t s_lcd_dc_cfg =
 {
 	.p_port = LCD_DC_GPIO_Port,  .pins = LCD_DC_Pin,
@@ -76,16 +85,38 @@ static gpio_cfg_t s_lcd_rst_cfg =
 	.p_port = LCD_RST_GPIO_Port, .pins = LCD_RST_Pin,
 	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
 };
-static gpio_cfg_t s_lcd_bl_cfg =
-{
-	.p_port = ST7789T3_BL_PORT,  .pins = ST7789T3_BL_PIN,
-	.mode   = GPIO_MODE_OUTPUT_PP, .pull = GPIO_NOPULL, .speed = GPIO_SPEED_FREQ_LOW,
-};
 
 static gpio_driver_t s_lcd_dc_pin;
 static gpio_driver_t s_lcd_cs_pin;
 static gpio_driver_t s_lcd_rst_pin;
-static gpio_driver_t s_lcd_bl_pin;
+
+/* ============================= 背光调光 ============================= */
+/* 初始占空比全 0: 上电背光先灭, 等 lv_port_disp 调 set_backlight 才亮 —— 与改造前
+   的时序一致(那时是 gpio_init 里先写低) */
+static pwm_cfg_t s_lcd_bl_pwm_cfg =
+{
+	.p_tim_base = ST7789T3_BL_TIM,
+	.init =
+	{
+		.CounterMode       = TIM_COUNTERMODE_UP,
+		.ClockDivision     = TIM_CLOCKDIVISION_DIV1,
+		.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE,
+	},
+	.tim_clock_hz = ST7789T3_BL_TIM_CLK_HZ,
+	.freq_hz      = ST7789T3_BL_FREQ_HZ,
+	.channels     = ST7789T3_BL_CHANNEL,
+	.duty_percent = { 0U, 0U, 0U, 0U },
+	.gpio =
+	{
+		.p_port = LCD_PWR_GPIO_Port,             /* PA1 = TIM2_CH2 */
+		.pins   = LCD_PWR_Pin,
+		.mode   = GPIO_MODE_AF_PP,
+		.pull   = GPIO_NOPULL,
+		.speed  = GPIO_SPEED_FREQ_LOW,
+		.af     = GPIO_AF1_TIM2,
+	},
+};
+static pwm_driver_t s_lcd_bl_pwm;
 
 static st7789t3_spi_interface_t         st7789t3_spi_interface_instance;
 static st7789t3_gpio_interface_t        st7789t3_gpio_interface_instance;
@@ -154,23 +185,23 @@ static int8_t lvgl_bsp_disp_rst_set(uint8_t level)
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_backlight_set
- * @brief   背光写(0=熄灭, 非0=点亮); PA1 为开/关型, 不做PWM调光
- * @param   level[in] 背光值
+ * @brief   背光调光: 把亮度百分比写进 TIM2_CH2 的 CCR
+ * @param   level[in] 亮度(0=全灭, 100=全亮)
  *
  * @return  无
  *****************************************************************************/
 static void lvgl_bsp_disp_backlight_set(uint8_t level)
 {
-	lvgl_bsp_disp_pin_write(&s_lcd_bl_pin, level);
+	(void)s_lcd_bl_pwm.pf_set_duty(&s_lcd_bl_pwm, ST7789T3_BL_CHANNEL, level);
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_gpio_init
- * @brief   四根控制脚(DC/CS/RST/背光)配置到运行态
+ * @brief   三根控制脚(DC/CS/RST)配置到运行态
  *
- * @return  0 success
+ * @return  恒 0
  *
- * @note    四根控制脚(DC=PA6 / CS=PA4 / RST=PC13 / 背光=PA1)全由本层自配, 不上交
+ * @note    三根控制脚(DC=PA6 / CS=PA4 / RST=PC13)全由本层自配, 不上交
  *          main.c: 与触摸 adapter 自持 RST(PA15)/INT(PB2) 是同一做法。
  *          @note 本工程**没有** MX_GPIO_Init —— 参考工程 Dirver_Test/Core/Src/gpio.c
  *                里那个函数在迁移时没搬进来, main.c 的调用点("Initialize all
@@ -192,23 +223,23 @@ static int8_t lvgl_bsp_disp_gpio_init(void)
 	(void)s_lcd_rst_pin.pf_write(&s_lcd_rst_pin, 1U);
 	(void)s_lcd_cs_pin.pf_write(&s_lcd_cs_pin, 1U);
 	(void)s_lcd_dc_pin.pf_write(&s_lcd_dc_pin, 1U);
-	(void)s_lcd_bl_pin.pf_write(&s_lcd_bl_pin, 0U);
 
 	(void)s_lcd_rst_pin.pf_init(&s_lcd_rst_pin);
 	(void)s_lcd_cs_pin.pf_init(&s_lcd_cs_pin);
 	(void)s_lcd_dc_pin.pf_init(&s_lcd_dc_pin);
 
-	return s_lcd_bl_pin.pf_init(&s_lcd_bl_pin);
+	return 0;
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_gpio_deinit
- * @brief   释放四根控制脚, 置低功耗态模拟输入
+ * @brief   释放三根控制脚, 置低功耗态模拟输入
  *
- * @return  0 success
+ * @return  恒 0
  *
  * @note    不动端口时钟: GPIOA 上还挂着 SPI1 的 PA5/PA7 与 I2C 的 PA8,
  *          GPIOC 也只有 PC13 这一根线, 关时钟会误伤。
+ * @note    背光 PA1 不在这里: 它归 PWM, 由 pwm 的 pf_deinit 收尾。
  *****************************************************************************/
 static int8_t lvgl_bsp_disp_gpio_deinit(void)
 {
@@ -216,34 +247,41 @@ static int8_t lvgl_bsp_disp_gpio_deinit(void)
 	(void)s_lcd_cs_pin.pf_deinit(&s_lcd_cs_pin);
 	(void)s_lcd_dc_pin.pf_deinit(&s_lcd_dc_pin);
 
-	return s_lcd_bl_pin.pf_deinit(&s_lcd_bl_pin);
+	return 0;
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_pwm_init
- * @brief   背光调光外设初始化
+ * @brief   背光调光外设初始化: 建 TIM2_CH2 的 PWM 实例并启动输出
  *
  * @return  0 success
+ *         -1 实例构造失败(cfg 非法)
+ *         其余为 pwm_hal 的 pf_init 错误码(见其 @return)
  *
- * @note    背光是 PA1 的开关型 GPIO(归 gpio 接口的 s_lcd_bl_pin 管), 当前没有
- *          PWM 外设, 这里先做空实现占位; 以后真上定时器调光时在此配置。
+ * @note    驱动在 st7789t3_init 里回调本函数, 早于复位脉冲 —— 此时占空比是 0,
+ *          背光还不亮, 由 lv_port_disp 随后调 set_backlight 点亮
  *****************************************************************************/
 static int8_t lvgl_bsp_disp_pwm_init(void)
 {
-	return 0;
+	if (0 != pwm_driver_inst(&s_lcd_bl_pwm, &s_lcd_bl_pwm_cfg))
+	{
+		return -1;
+	}
+
+	return s_lcd_bl_pwm.pf_init(&s_lcd_bl_pwm);
 }
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_pwm_deinit
- * @brief   背光调光外设反初始化
+ * @brief   背光 PWM 反初始化: 关 TIM2 并把 PA1 置低功耗态模拟输入
  *
- * @return  0 success
+ * @return  0 success / -1 instance null (见 pwm_hal 的 pf_deinit)
  *
- * @note    同 pf_init: 当前无 PWM 外设, 空实现占位。
+ * @note    与 pwm_init 对称, 都由驱动在 st7789t3_deinit 里回调
  *****************************************************************************/
 static int8_t lvgl_bsp_disp_pwm_deinit(void)
 {
-	return 0;
+	return s_lcd_bl_pwm.pf_deinit(&s_lcd_bl_pwm);
 }
 
 /******************************************************************************
@@ -329,7 +367,7 @@ static int8_t st7789t3_spi_send_bytes_dma(uint8_t *pdata, uint32_t size)
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_inst
- * @brief   构造ST7789T3实例: 四根控制脚GPIO → 挂四个驱动接口 → st7789t3_inst(含面板初始化)
+ * @brief   构造ST7789T3实例: 三根控制脚GPIO → 挂四个驱动接口 → st7789t3_inst(含面板初始化)
  * @param   无
  *
  * @return  0 success
@@ -342,11 +380,10 @@ int8_t lvgl_bsp_disp_inst(void)
 {
 	int8_t ret = 0;
 
-	/* 0. 装配四根控制脚各自的 gpio 实例(不碰硬件, 真正配置在 gpio 的 pf_init 里) */
+	/* 0. 装配三根控制脚各自的 gpio 实例(不碰硬件, 真正配置在 gpio 的 pf_init 里) */
 	(void)gpio_driver_inst(&s_lcd_dc_pin,  &s_lcd_dc_cfg);
 	(void)gpio_driver_inst(&s_lcd_cs_pin,  &s_lcd_cs_cfg);
 	(void)gpio_driver_inst(&s_lcd_rst_pin, &s_lcd_rst_cfg);
-	(void)gpio_driver_inst(&s_lcd_bl_pin,  &s_lcd_bl_cfg);
 
 	/* 1. 挂SPI接口(转发到 main.c 的 lcd_spi_instance)
 	      四根控制脚的 GPIO 配置不在这里做, 已搬进 lvgl_bsp_disp_gpio_init, 由驱动在
@@ -464,8 +501,8 @@ int8_t lvgl_bsp_disp_wakeup(void)
 
 /******************************************************************************
  * @name    lvgl_bsp_disp_set_backlight
- * @brief   背光开关
- * @param   value[in] 0=熄灭, 非0=点亮
+ * @brief   背光调光(透传到 TIM2_CH2 的占空比)
+ * @param   value[in] 亮度(0=全灭, 100=全亮)
  *
  * @return  0 success / -1 instance null (见驱动 @return)
  *****************************************************************************/

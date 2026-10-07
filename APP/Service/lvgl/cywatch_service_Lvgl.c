@@ -79,9 +79,8 @@
    .o 整个被链接器 GC), 属于残留. */
 
 
-/* UI 泵节拍: LVGL 自身刷新周期 LV_DEF_REFR_PERIOD=33ms, 5ms 只是让触摸采样与
-   timer 到期判定更及时, 不会造成额外重绘(lv_timer_handler 内部按各 timer
-   period 判断). 注意不要用 osDelay(33) —— 会让触摸采样率掉到 30Hz */
+/* UI 泵兜底节拍(ms): EVT_RUN 正常按 lv_timer_handler() 的返回值睡到下一个 timer
+   到期, 只有它返回 0 或 LV_NO_TIMER_READY 时才退回这个值 */
 #define SERVICE_LVGL_LOOP_TICK          (5u)
 /* 单步初始化失败重试上限与间隔 */
 #define SERVICE_LVGL_INIT_RETRY_MAX     (5)
@@ -106,7 +105,10 @@ typedef enum State_Lvgl_Service
 	EVT_ERROR,        /* 初始化失败, 空转 */
 } State_Lvgl_Service_t;
 
-static State_Lvgl_Service_t ServiceState;
+/* 必须 volatile: 由 service_lvgl_sleep/wakeup 从别的任务改, 而任务循环里所有调用
+   都是外部函数(改不了本 TU 的 static), -O2 下编译器会把非 volatile 的值缓存进寄存器,
+   导致状态切换永远读不到 */
+static volatile State_Lvgl_Service_t ServiceState;
 
 /* 任务属性: 栈 4096 —— LVGL 渲染递归(对象树/flex/chart) + printf 的 newlib 栈开销
    都比普通任务深, 不要沿用 skill 里的 2048 默认值 */
@@ -216,10 +218,20 @@ static void service_lvgl_run(void *pvParameters)
 			break;
 
 		case EVT_RUN:
-			/* 5. UI 泵: 跑定时器/动画/渲染, 触摸读回调也由它按 indev 周期驱动 */
-			lv_timer_handler();
-			osDelay(SERVICE_LVGL_LOOP_TICK);
+		{
+			/* 5. UI 泵: 跑定时器/动画/渲染, 触摸读回调也由它按 indev 周期驱动.
+			   返回值是"距下一个 timer 到期还有几 ms", 睡到那时候再醒, 不再固定睡
+			   5ms. 两种值不能直接交给 osDelay: LV_NO_TIMER_READY(0xFFFFFFFF) 会
+			   把 UI 冻住, 0 会让 osDelay 变成忙等 */
+			uint32_t next_ms = lv_timer_handler();
+
+			if (LV_NO_TIMER_READY == next_ms || 0u == next_ms)
+			{
+				next_ms = SERVICE_LVGL_LOOP_TICK;
+			}
+			osDelay(next_ms);
 			break;
+		}
 
 		case EVT_SLEEP:
 			/* 显示与触摸一起睡. 必须同进同出: 屏一 SLPIN, flush_cb 就不能再往

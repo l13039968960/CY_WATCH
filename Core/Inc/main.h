@@ -59,8 +59,8 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 /* USER CODE BEGIN Private defines */
 /* LCD(ST7789T3) 引脚: PA5=SCK / PA7=MOSI 是 SPI1 的 AF5 复用脚,
-   其余 DC/CS/RST/PWR 由 adapter 当普通 GPIO 用(见 cywatch_adapter_disp.c)。
-   PA1 背光只做开/关, 不做 PWM 调光 */
+   其余 DC/CS/RST 由 adapter 当普通 GPIO 用(见 cywatch_adapter_disp.c)。
+   PA1 背光走 TIM2_CH2 的 AF1 复用, 做 PWM 调光(0~100 百分比) */
 #define LCD_SCL_Pin GPIO_PIN_5
 #define LCD_SCL_GPIO_Port GPIOA
 #define LCD_SDA_Pin GPIO_PIN_7

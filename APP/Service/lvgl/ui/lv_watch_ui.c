@@ -21,12 +21,12 @@
  *
  * lv_watch_ui_init():
  *   1. page_mgr_init + 让三页各自 register(此时**一个控件都还没建**);
- *   2. 建模型定时器(1s, 推进时钟/步数/心率/卡路里);
+ *   2. 建模型定时器(1s, 推进步数/卡路里);
  *   3. 切换到首页 —— page_mgr_switch(HOME, 瞬切), home 的 pf_create 在这步才被调到.
  *   menu/heart 的控件**要到第一次切过去时才建**(懒创建 = 省 LVGL 内存池).
  *
  * 数据(本文件持有, 页面只读), 分两类:
- *   1) 模拟量 s_steps/s_hr/s_kcal —— 由模型定时器每秒推进, 页面经 watch_model_*() 读;
+ *   1) 模拟量 s_steps/s_kcal —— 由模型定时器每秒推进, 页面经 watch_model_*() 读;
  *   2) 真实时间 —— 日期与大字时钟的真源是**硬件 RTC**(LSE + 备份域), 经
  *      watch_model_datetime() 透传. 它不是"模型", 不需要谁来推进, 所以本文件只转发.
  *   为什么与页面分开: 页面会被 LRU 淘汰重建, 数据不该跟着归零.
@@ -78,7 +78,6 @@
 /***********************************Defines************************************/
 
 /**********************************Declaring***********************************/
-static const char *watch_page_name(const page_base_t *p_page);
 static void watch_model_timer_cb(lv_timer_t *p_timer);
 /**********************************Declaring***********************************/
 
@@ -92,7 +91,6 @@ static lv_timer_t *s_model_timer = NULL;
 /* 模拟数据 —— 放静态变量而非页面结构体: 页面被淘汰重建后步数/心率不归零.
    注意这里**没有**时钟: 日期与大字时钟的真源是硬件 RTC, 见 watch_model_datetime() */
 static uint32_t s_steps = 0; /* 步数 */
-static uint32_t s_hr = 68;	 /* 心率值 */
 static uint32_t s_kcal = 0;	 /* 卡路里 */
 static uint32_t s_tick = 0;	 /* 1s节拍计数(伪随机数据源) */
 
@@ -105,63 +103,27 @@ static uint8_t s_inited = 0;
 /*********************************Static Data**********************************/
 
 /******************************************************************************
- * @name    watch_page_name
- * @brief   由 page_id 取页面名(只给日志用)
- * @param   p_page[in] 页面
- *
- * @return  页面名字符串; 非本UI的页面返回 "?"
- *
- * @note    加新页面时在这里补一个 case, 否则它的切页日志只显示 "?"
- *****************************************************************************/
-static const char *watch_page_name(const page_base_t *p_page)
-{
-	if (NULL == p_page)
-	{
-		return "?";
-	}
-
-	switch (p_page->page_id)
-	{
-		case WATCH_PAGE_ID_HOME:  return "HOME";
-		case WATCH_PAGE_ID_MENU:  return "MENU";
-		case WATCH_PAGE_ID_HEART: return "HEART";
-		case WATCH_PAGE_ID_SPO2:  return "SPO2";
-		case WATCH_PAGE_ID_OTA:   return "OTA";
-		default:                  return "?";
-	}
-}
-
-/******************************************************************************
  * @name    watch_switch
- * @brief   切页: 按 id 找页面 -> page_mgr_switch -> 打日志(接口见 lv_watch_page.h)
+ * @brief   切页: 按 id 找页面 -> page_mgr_switch(接口见 lv_watch_page.h)
  * @param   page_id[in] 目标页面 ID(WATCH_PAGE_ID_xxx)
  * @param   anim[in]    切屏动画
  *
  * @return  无
  *
- * @note    失败只打日志、不返回错误码: 调用方都是事件回调(按钮/手势), 那里没有
- *          任何可回滚的事务, 拿到返回码也只能打印 —— 不如在这里打印, 三处写一遍
+ * @note    **不报错**(返回 void): 调用方都是事件回调(按钮/手势), 那里没有任何可
+ *          回滚的事务; 页不存在或切换失败都静默忽略
  * @note    目标页控件若已被淘汰, 管理器会在 page_mgr_switch 内部重建它(懒创建)
  *****************************************************************************/
 void watch_switch(uint16_t page_id, lv_screen_load_anim_t anim)
 {
-	int8_t ret = 0;
 	page_base_t *p_page = page_mgr_find(&s_watch_mgr, page_id);
 
 	if (NULL == p_page)
 	{
-		log_printf("WATCH nav: id 0x%04X not found\r\n", (unsigned)page_id);
 		return;
 	}
 
-	ret = page_mgr_switch(&s_watch_mgr, p_page, anim);
-	if (0 != ret)
-	{
-		log_printf("WATCH nav: switch failed (%d)\r\n", (int)ret);
-		return;
-	}
-
-	log_printf("WATCH nav ->%s\r\n", watch_page_name(p_page));
+	(void)page_mgr_switch(&s_watch_mgr, p_page, anim);
 }
 
 /******************************************************************************
@@ -281,7 +243,7 @@ watch_swipe_dir_t watch_swipe_track(lv_event_t *e)
  * @return  0 成功; -1 p_time 为 NULL; 否则透传 cywatch_rtc_get() 的返回码
  *          (-2 未初始化/不可用, -3/-4 读寄存器失败, 详见 cywatch_rtc.h)
  *
- * @note    它与上面几个 watch_model_steps/hr/kcal 的**性质不同**: 那几个是每秒推进的
+ * @note    它与上面几个 watch_model_steps/kcal 的**性质不同**: 那几个是每秒推进的
  *          模拟量, 本函数是穿透到硬件的转发(见 lv_watch_page.h 的类型说明)
  * @note    返回码**逐字透传**, 不做二次映射: -2 是"根本没有时间源"的语义, 上层
  *          (表盘页)要据此画占位, 而不是画一个看着正常的假时间
@@ -309,18 +271,6 @@ uint32_t watch_model_steps(void)
 }
 
 /******************************************************************************
- * @name    watch_model_hr
- * @brief   取心率值(接口见 lv_watch_page.h)
- * @param   无
- *
- * @return  心率(BPM)
- *****************************************************************************/
-uint32_t watch_model_hr(void)
-{
-	return s_hr;
-}
-
-/******************************************************************************
  * @name    watch_model_kcal
  * @brief   取卡路里(接口见 lv_watch_page.h)
  * @param   无
@@ -341,7 +291,6 @@ uint32_t watch_model_kcal(void)
  *
  * @note    它与页面刷新定时器的区别: 页面只管"把数据画出来", 数据本身由这里推进
  *          (时间除外 —— 日期/时钟由硬件 RTC 自己走, 本定时器不掺和)
- * @note    每10s打印一次tick心跳, 证明 lv_timer_handler 仍在推进
  *****************************************************************************/
 static void watch_model_timer_cb(lv_timer_t *p_timer)
 {
@@ -352,12 +301,6 @@ static void watch_model_timer_cb(lv_timer_t *p_timer)
 	/* 确定性伪随机走动(演示用) */
 	s_steps += 1 + (s_tick % 3);
 	s_kcal += (s_tick % 5);
-	s_hr = 68 + (s_tick % 13);
-
-	if (0 == (s_tick % 10))
-	{
-		log_printf("WATCH tick=%lu\r\n", (unsigned long)s_tick);
-	}
 }
 
 /******************************************************************************
@@ -381,7 +324,6 @@ int8_t lv_watch_ui_init(void)
 	/* 防重复初始化: 重复调会把缓冲区清空, 而旧屏幕还挂在显示上 → 无人认领 */
 	if (0 != s_inited)
 	{
-		log_printf("WATCH already inited\r\n");
 		return 0;
 	}
 
@@ -395,31 +337,26 @@ int8_t lv_watch_ui_init(void)
 	ret = watch_page_home_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		log_printf("WATCH register HOME failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_menu_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		log_printf("WATCH register MENU failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_heart_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		log_printf("WATCH register HEART failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_spo2_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		log_printf("WATCH register SPO2 failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 	ret = watch_page_ota_register(&s_watch_mgr);
 	if (0 != ret)
 	{
-		log_printf("WATCH register OTA failed (%d)\r\n", (int)ret);
 		return -2;
 	}
 
@@ -436,7 +373,6 @@ int8_t lv_watch_ui_init(void)
 						  LV_SCR_LOAD_ANIM_NONE);
 	if (0 != ret)
 	{
-		log_printf("WATCH switch HOME failed (%d)\r\n", (int)ret);
 		return -3;
 	}
 

@@ -53,7 +53,7 @@ typedef enum lvgl_bsp_disp_dir
 	lvgl_bsp_disp_dir_270 = 270	 /* 270° 横屏 280x240 */
 } lvgl_bsp_disp_dir_t;
 
-/* 构造: 绑定 main.c 的 SPI1 总线实例 + 背光引脚, 调 st7789t3_inst(含面板初始化) */
+/* 构造: 绑定 main.c 的 SPI1 总线实例 + 自建背光 PWM(TIM2_CH2), 调 st7789t3_inst(含面板初始化) */
 int8_t lvgl_bsp_disp_inst(void);
 int8_t lvgl_bsp_disp_deinst(void);
 
@@ -64,7 +64,7 @@ int8_t lvgl_bsp_disp_display_off(void);
 int8_t lvgl_bsp_disp_sleep(void);
 int8_t lvgl_bsp_disp_wakeup(void);
 
-/* 背光: 0=熄灭, 非0=点亮(PA1 为开关型, 不做 PWM 调光) */
+/* 背光调光: 0~100 百分比(PA1 = TIM2_CH2 的 PWM) */
 int8_t lvgl_bsp_disp_set_backlight(uint8_t value);
 
 /* 画面绘制(坐标含端点, 驱动内部处理面板偏移与 RGB565 字节序) */
