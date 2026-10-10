@@ -37,6 +37,7 @@
 #include "cywatch_service_fatfs.h"  /* service_fatfs_init() */
 #include "cywatch_service_key.h"    /* service_key_init() */
 #include "cywatch_service_nordicprotocol.h" /* service_nordicprotocol_init() */
+#include "cywatch_service_ota.h"            /* service_ota_init() (只注册特征回调) */
 #include "cywatch_service_AttitudeCalculation.h" /* service_attitudecalculation_init() */
 #include "cywatch_service_HeartRate.h"      /* service_heartrate_init() */
 #include "cywatch_service_humiture.h"       /* service_humiture_init() */
@@ -58,12 +59,6 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-/* ===== Nordic 服务层闭环测试脚手架 =====
-   1 = 注册回显: 收到已注册特征的数据, 原样回一条同特征同内容的.
-   ★测完请改回 0★ —— 打开时它让"收到就回"成为产品行为, 且每次收帧都占用 RX 任务
-   做一次 send(协议核的回调里) */
-#define NORDIC_SVC_LOOPBACK_TEST   0
-
 /* ===== MPU6050 / MAX30102 服务层闭环测试脚手架 =====
    1 = 建一个一次性自检任务: 先用 adapter 的 xxx_bsp_*() 把 BSP 层打出来(WHO_AM_I /
    PART_ID / 单次 6 轴 / 单次 FIFO 样本), 自检完再把两条真实服务任务拉起来.
@@ -508,19 +503,6 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#if NORDIC_SVC_LOOPBACK_TEST
-/**
- * @brief  闭环测试回显: 收到什么特征的数据, 就原样回一条同特征同内容的.
- * @note   运行在 RX 任务上下文(协议核的接收回调), 所以 send 必须非阻塞 —— 它确实是.
- * @note   ★不要回 ACK(0x00)与 0x11/0x10 控制帧★: 那几类根本到不了这里(协议核自用).
- *         也正因如此, 本回显不会与对端形成无限循环.
- */
-static void nordic_test_echo(uint8_t feature, uint8_t *pdata, uint16_t len)
-{
-	(void)service_nordicprotocol_send(feature, pdata, len, NULL);
-}
-#endif
-
 #if SENSOR_SVC_LOOPBACK_TEST
 static const osThreadAttr_t g_sensor_selftest_attr =
 {
@@ -683,7 +665,8 @@ int main(void)
 	/* Initialize all configured peripherals */
 
 	/* USER CODE BEGIN 2 */
-	/* USART1: PA9=TX/PA10=RX, 115200 8N1. 初始化后 printf 即发往 PA9 */
+	/* 日志口 USART6: PA11=TX/PA12=RX, 115200 8N1. 初始化后 printf 即发往 PA11
+	   ★与 Nordic 的 USART1(PA9/PA10) 是两个独立的口, 日志不再插进协议线★ */
     UART_Init();
 
 	/* ===== 日志互斥量: 把整条 printf 跨任务串行化 =====
@@ -890,9 +873,8 @@ int main(void)
 	/* ===== Nordic 协议服务: USART1(115200 8N1) + DMA2_Stream7(TX)/Stream2(RX) =====
 	   一条龙里含板级绑定(DMA/NVIC/USART1 驱动)与 BSP 构造, 都在 osKernelStart 之前
 	   可调; RX/TX 两个任务只在这里挂上, 任务体进调度器后才跑
-	   @warning ★USART1 与 printf 共用★: 参考工程把 printf 挪到 USART2, 但本板 PA2
-	            已被 ADKEY 占用, 故按现状两个口都落在 USART1 —— printf 与 Nordic
-	            帧会互相插字节, 且同一 USART1 上有两个 UART_HandleTypeDef
+	   @warning USART1 已整条让给链路: printf 走 USART6(PA11/PA12, 见 UART_Init)。
+	            往 PA9/PA10 上写任何字节都是往协议线里注入, 日志一律走 log_printf()
 	   @warning 返回值必须看: -4 = NVIC 优先级违反 FreeRTOS 约束(上电即静默崩),
 	            -2/-7 = 内核堆不足, 都表现为"串口一声不响" */
 	{
@@ -904,15 +886,16 @@ int main(void)
 			Error_Handler();
 		}
 		printf("[NORDIC] service init ok(\"nordic_rx\"/\"nordic_tx\" 任务已建)\r\n");
-
-#if NORDIC_SVC_LOOPBACK_TEST
-		/* 闭环测试: 单帧区间(0x02)与消息区间(0x81)各注册一个回显.
-		   @note 必须在 init() 之后调 —— 协议核实例由它构造; 也必须在收到第一帧之前调完
-		         (协议核的回调表不做并发保护, 见服务头的 @note) */
-		(void)service_nordicprotocol_register_feature(0x02u, nordic_test_echo);
-		(void)service_nordicprotocol_register_feature(0x81u, nordic_test_echo);
-#endif
 	}
+
+	/* ===== OTA 服务: 只注册两个特征回调, 不建任务(下载任务按需起、用完自退) =====
+	   @note ★必须紧跟在 service_nordicprotocol_init() 后面、osKernelStart() 之前★
+	         BSP 那张特征回调表不做并发保护(只被 RX 任务读), 注册要赶在 RX 任务真正
+	         跑起来之前写完 —— 这个位置调度器还没起, 时间点天然满足
+	   @note 这里注册的是 feature 0x02(应用层应答) 与 0x81(镜像块). 一个特征只有
+	         一个回调槽位, 后注册的会顶掉先注册的 */
+	service_ota_init();
+	printf("[OTA] feature 0x02/0x81 rx callbacks registered\r\n");
 
 	/* ===== MPU6050(姿态) / MAX30102(心率) / AHT21(温湿度) 服务 =====
 	   @note 三个 service_*_init() 都只建任务、不碰设备: 设备的实例化在三个 adapter

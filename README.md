@@ -82,23 +82,27 @@ Reload`），否则 Keil 内存里的旧设置会在保存时覆盖掉改动。
    `Driver/STM32F4xx_HAL_Driver/Src/stm32f4xx_hal_xxx.c`
    （I2C 记得连带 `stm32f4xx_hal_i2c_ex.c`，TIM 连带 `_tim_ex.c`）。
 
-外设的 `HAL_xxx_MspInit` 放哪都行，但**别重复定义**：本工程 UART 的时钟/GPIO
-内联在 `uart.c` 的 `UART_Init()` 里，其余外设留在 `Core/stm32f4xx_hal_msp.c`。
+外设的 `HAL_xxx_MspInit` 放哪都行，但**别重复定义**：本工程日志口的时钟/GPIO
+内联在 `uart.c` 的 `UART_Init()` 里，其余外设留在各自驱动或 `Core/stm32f4xx_hal_msp.c`。
 
 当前已启用的 HAL 模块：`HAL / DMA / FLASH / GPIO / EXTI / PWR / RCC / CORTEX / UART`。
 
 ## 串口与 printf
 
-`Core/system/uart/` 提供 USART1 初始化与 printf 重定向：
+`Core/system/uart/` 提供日志口初始化与 printf 重定向：
 
 | 项 | 值 |
 | --- | --- |
-| 外设 | USART1 |
-| 引脚 | PA9 = TX，PA10 = RX |
+| 外设 | USART6（★日志口，与 Nordic 链路的 USART1 分开★） |
+| 引脚 | PA11 = TX，PA12 = RX |
 | 参数 | 115200 baud，8 数据位，1 停止位，无校验，无流控 |
-| 复用 | `GPIO_AF7_USART1` |
+| 复用 | `GPIO_AF8_USART6` |
 
-`main()` 的 `USER CODE BEGIN 2` 里调用 `UART_Init()`，之后 `printf` 即输出到 PA9。
+选 PA11/PA12 而不是 PC6/PC7：UFQFPN48 封装没引出 PC6/PC7。PA11/PA12 的另一复用是
+USB DM/DP，本工程不用 USB。
+
+`main()` 的 `USER CODE BEGIN 2` 里调用 `UART_Init()`，之后 `printf` 即输出到 PA11。
+USART1（PA9/PA10）整条归 Nordic 协议链路，往上写任何字节都是往协议线里注入。
 主循环里有一句心跳：`printf("CY_WATCH alive: %lu ms\r\n", HAL_GetTick())`。
 
 重定向靠 MicroLIB 的 `fputc` 钩子，工程已开 `<useUlib>1</useUlib>`（MicroLIB）——

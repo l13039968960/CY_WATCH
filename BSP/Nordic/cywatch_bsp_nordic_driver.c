@@ -18,8 +18,8 @@
  * 写法: 每个函数第一参数都是实例, 状态都从实例上取.
  *
  * 两条铁律(违反必出帧错乱):
- *   一, 发送状态只由 TX 任务改写. RX 侧探到 ACK / 0x10 / 0x11 时只写"事件标志 +
- *       值"再 Release 掉 tx 信号量(pf_tx_release), 由 TX 任务醒来消费 —— 所以本文件里
+ *   一, 发送状态只由 TX 任务改写. RX 侧探到 ACK 时只写"事件标志 + 值"再 Release 掉
+ *       tx 信号量(pf_tx_release), 由 TX 任务醒来消费 —— 所以本文件里
  *       rx_dispatch_frame() 及其下游一行都不碰 tx_state / tx_cur_*.
  *   二, 总线写口有两个写者(RX 侧直发 ACK / TX 侧发数据与控制帧), 每次"把一整帧
  *       交给总线"都要走 proto_bus_write() 并持总线互斥量(pf_bus_acquire/release).
@@ -36,7 +36,7 @@
 /***********************************Includes***********************************/
 
 /***********************************Defines************************************/
-/* 线上帧: AA 55 | Feature id | Seq | Length | payload(0-32) | CRC16(2) */
+/* 线上帧: AA 55 | Feature id | Seq | Length | payload(0-128) | CRC16(2) */
 #define PROTO_SYNC_BYTE_0	0xAAu
 #define PROTO_SYNC_BYTE_1	0x55u
 
@@ -70,7 +70,6 @@ typedef enum
 {
 	TX_STATE_IDLE = 0u,   /* 空闲: 没有在等任何东西 */
 	TX_STATE_WAIT_ACK,    /* 已投出一帧, 等它的帧级 ACK(等不到就重传) */
-	TX_STATE_WAIT_MSG,    /* 整条消息的帧都发完了, 等对端的 0x11/0x10 */
 } proto_tx_state_e;
 /**********************************Declaring***********************************/
 
@@ -91,12 +90,11 @@ static int8_t   tx_ring_push(bsp_nordic_driver_t *p_inst, uint8_t feature,
 static void     tx_ring_read(bsp_nordic_driver_t *p_inst, uint16_t start,
 							 uint16_t offset, uint8_t *p_dst, uint16_t len);
 
-/* 发送侧: 停等重传与消息级握手 */
+/* 发送侧: 分包与停等重传 */
 static uint16_t tx_msg_crc(bsp_nordic_driver_t *p_inst,
 						   const nordic_tx_slot_t *p_slot);
 static int8_t   tx_send_frame(bsp_nordic_driver_t *p_inst, uint8_t feature,
 							  const uint8_t *p_payload, uint8_t len);
-static int8_t   tx_wait_msg_ack(bsp_nordic_driver_t *p_inst);
 static int8_t   tx_send_all_frames(bsp_nordic_driver_t *p_inst,
 								   const nordic_tx_slot_t *p_slot, uint16_t pkg_num);
 static void     tx_do_single(bsp_nordic_driver_t *p_inst,
@@ -109,8 +107,6 @@ static void     tx_process_record(bsp_nordic_driver_t *p_inst);
 /* 接收 */
 static void     rx_reset(bsp_nordic_driver_t *p_inst);
 static void     rx_send_ack(bsp_nordic_driver_t *p_inst, uint8_t seq);
-static void     rx_queue_control(bsp_nordic_driver_t *p_inst, uint8_t code,
-								 uint8_t feature);
 static void     ACKProcess(bsp_nordic_driver_t *p_inst, uint8_t seq);
 static void     CMDProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 						   const uint8_t *p_payload, uint8_t len);
@@ -182,7 +178,7 @@ static uint16_t proto_crc16(const uint8_t *pdata, uint32_t len)
  * @param  feature    Feature id
  * @param  seq        帧序号
  * @param  p_payload  payload(可为 NULL, 此时 len 必须为 0)
- * @param  len        payload 长度(0-32)
+ * @param  len        payload 长度(0-128)
  * @param  p_out      [out] 整帧输出缓冲(至少 7+len 字节)
  * @return 整帧字节数(7 + len)
  * @note   CRC 覆盖 Feature..payload, 不含帧头两字节
@@ -350,25 +346,6 @@ static void rx_send_ack(bsp_nordic_driver_t *p_inst, uint8_t seq)
 }
 
 /**
- * @brief  把一个 0x10/0x11 排进发送环, 让 TX 任务按普通帧发出去
- * @param  p_inst   驱动实例
- * @param  code     0x10 / 0x11
- * @param  feature  该控制帧携带的特征号
- * @note   走正常发送流程(不是直发): 控制帧要占 seq、要帧级 ACK 与重传, 而 seq 只
- *         能由 TX 任务串行分配(铁律一).
- * @note   环满时静默丢弃 —— 对端的消息级超时会自愈, 这里不另开重试路径.
- */
-static void rx_queue_control(bsp_nordic_driver_t *p_inst, uint8_t code,
-							 uint8_t feature)
-{
-	uint8_t payload[2];
-
-	payload[0] = code;
-	payload[1] = feature;
-	(void)tx_ring_push(p_inst, NORDIC_FEATURE_CTRL, payload, 2u, NULL);
-}
-
-/**
  * @brief  收到 ACK 帧: 只记事件 + 唤醒 TX 任务(铁律一)
  * @note   ACK 帧自身永不被 ACK, 也不走判重闸门(重复的 ACK 由 TX 侧比 seq 丢掉).
  */
@@ -380,44 +357,22 @@ static void ACKProcess(bsp_nordic_driver_t *p_inst, uint8_t seq)
 }
 
 /**
- * @brief  控制帧(Feature id 0x01): 控制码在这里用 switch 分发, 不上报应用
+ * @brief  链路层控制帧(Feature id 0x01): 当前无定义控制码, 只回帧级 ACK
  * @param  p_inst     驱动实例
  * @param  seq        帧序号
- * @param  p_payload  payload = 控制码1 + 控制Data
+ * @param  p_payload  payload = 控制码1 + Data(0-127), 现在一律忽略
  * @param  len        payload 长度
- * @note   0x10/0x11 交回发送侧的规矩和 ACKProcess 完全一样: 只写事件再释放信号量,
- *         由 TX 任务消费. 特征匹配(堵住"上一条消息迟到的 0x11 造成假成功")也做在
- *         TX 侧, 因为只有它知道当前在途的是哪条.
+ * @note   ★这一路只在本跳(STM32↔nRF)内生效, 不穿过 nRF 转发给对端★ —— 所以它不能
+ *         当端到端命令通道用(要那个就落在数据区的 0x02).
+ * @note   消息层的 0x10/0x11 已删, 所以这里不再有"交回发送侧"的分发: 唯一欠对端的债
+ *         就是这个帧级 ACK.
  */
 static void CMDProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 					   const uint8_t *p_payload, uint8_t len)
 {
-	uint8_t code;
-	uint8_t feature;
-
-	rx_send_ack(p_inst, seq);           /* 应答先行 */
-
-	if (0u == len)
-	{
-		return;                         /* 连控制码都没有: 已回 ACK, 内容丢弃 */
-	}
-	code    = p_payload[0];
-	/* Data = 该控制码针对的特征号; 长度不足则置 0, 由 TX 侧的特征匹配挡掉 */
-	feature = (len >= 2u) ? p_payload[1] : 0u;
-
-	switch (code)
-	{
-	case NORDIC_CTRL_MSG_CRC_ERR:       /* 对端报: 分包传输 CRC 校验错误 */
-	case NORDIC_CTRL_MSG_OK:            /* 对端报: 分包传输重组成功 */
-		p_inst->tx_evt_ctrl_code    = code;
-		p_inst->tx_evt_ctrl_feature = feature;
-		p_inst->tx_evt_ctrl_valid   = 1u;   /* ★值先写, 标志后写★ */
-		(void)p_inst->p_semaphore_interface->pf_tx_release();
-		break;
-
-	default:                            /* 未知控制码: 忽略 */
-		break;
-	}
+	(void)p_payload;
+	(void)len;
+	rx_send_ack(p_inst, seq);           /* 应答先行, 内容一律丢弃 */
 }
 
 /**
@@ -440,13 +395,15 @@ static void DataProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 
 /**
  * @brief  消息数据包(Feature id 0x81-0xFF): 分包重组, 齐了才交应用
- * @param  p_payload  payload = 分包序号1 + Data(0-31)
+ * @param  p_payload  payload = 分包序号1 + Data(0-127)
  * @note   首包(序号0)的 Data = 包数目, 尾包(序号 包数目+1)的 Data = 整条消息 CRC16.
  *         收到序号0 的新首包即重置重组(丢弃未完成部分).
  * @note   不校验分片先后: 协议保证链路有序, 且每帧都要停等 ACK 才发下一帧, 所以
  *         分片不会乱序、不会缺; 真有损坏由尾包的整条 CRC 兜住.
- * @note   顺序纪律: 帧级 ACK → 消息级 0x11/0x10 入环 → 最后才调应用回调 —— 回调
- *         里是应用业务可能很慢, 而应答是欠对端的债, 不能让它等.
+ * @note   ★消息层没有跨端握手(0x10/0x11 已删)★: 校验不过就整条丢弃, 不通知对端 ——
+ *         对端只知道"帧都发完了"; 内容对不对由应用层的整包校验兜底.
+ * @note   顺序纪律: 帧级 ACK 先发, 最后才调应用回调 —— 回调里是应用业务可能很慢,
+ *         而应答是欠对端的债, 不能让它等.
  */
 static void MessageProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 						   const uint8_t *p_payload, uint8_t len)
@@ -492,11 +449,6 @@ static void MessageProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 		p_inst->rx_rasm_active = 0u;
 		p_inst->rx_rasm_len    = 0u;
 
-		/* 应答先行: 0x11(成功) / 0x10(失败) 入环, 由 TX 任务按普通帧送出 */
-		rx_queue_control(p_inst,
-						 (0u != ok) ? NORDIC_CTRL_MSG_OK : NORDIC_CTRL_MSG_CRC_ERR,
-						 p_inst->rx_feature);
-
 		if (0u != ok)
 		{
 			nordic_rx_cb_t pf_cb = p_inst->rx_cb_tab[p_inst->rx_feature];
@@ -511,7 +463,7 @@ static void MessageProcess(bsp_nordic_driver_t *p_inst, uint8_t seq,
 	}
 
 	/* 数据分片: 追加到重组缓冲. 放不下就丢弃本片 —— 尾包的整条 CRC 必然对不上,
-	 * 于是回 0x10, 由对端整条重发; 不在这里另开一条溢出处理路径. */
+	 * 整条消息就地丢弃; 不在这里另开一条溢出处理路径. */
 	datalen = (uint16_t)(len - 1u);
 	if (((uint32_t)p_inst->rx_rasm_len + (uint32_t)datalen) <=
 		(uint32_t)NORDIC_RX_MSG_BUF_SIZE)
@@ -571,7 +523,7 @@ static void rx_dispatch_frame(bsp_nordic_driver_t *p_inst)
  * @brief  逐字节喂帧解析器(8 态流式 FSM)
  * @param  byte   输入字节
  * @param  depth  重扫递归深度(正常解析传 0)
- * @note   Length > 32 非法 → 丢弃重扫, 不回 ACK; CRC 失败 → 丢弃、不回 ACK
+ * @note   Length > 128 非法 → 丢弃重扫, 不回 ACK; CRC 失败 → 丢弃、不回 ACK
  *         (由对端超时重传), 并把"0xAA 之后已收的字节"重新喂回 FSM —— payload 里
  *         正好出现 0xAA 0x55 是可能的, 不重扫会漏掉紧跟其后的真帧.
  */
@@ -709,7 +661,7 @@ static uint16_t tx_msg_crc(bsp_nordic_driver_t *p_inst,
  * @brief  投一帧出去, 停等它的帧级 ACK, 等不到就重传
  * @param  p_inst    驱动实例
  * @param  feature   特征号
- * @param  p_payload payload(0-32 字节)
+ * @param  p_payload payload(0-128 字节)
  * @param  len       payload 长度
  * @return 0 收到匹配的 ACK / -1 重传耗尽
  * @note   每帧占一个 seq(1 字节循环). ACK 帧里的那个字节是**确认号**, 不占本端 seq.
@@ -772,48 +724,6 @@ static int8_t tx_send_frame(bsp_nordic_driver_t *p_inst, uint8_t feature,
 }
 
 /**
- * @brief  整条消息的帧都发完了, 等对端的消息级确认
- * @param  p_inst 驱动实例
- * @return 0 收到特征匹配的 0x11 / -2 收到 0x10 或消息级超时(都由调用方整体重发)
- * @note   ★特征对不上 = 上一条消息迟到的确认, 不采信★, 否则会出现"假成功".
- * @note   ★本函数**不清 ctrl 标志**★: 对端的 0x11 常常在本端 TX 还没被调度起来时
- *         就已经被 RX 收下了 —— 在这里清会把它清掉, 白等一个消息超时. 清理放在
- *         tx_process_record 的开头(那时新记录还没发出去, 清掉的只可能是上一条的残留).
- */
-static int8_t tx_wait_msg_ack(bsp_nordic_driver_t *p_inst)
-{
-	p_inst->tx_stamp = p_inst->p_timebase_interface->pf_get_time();
-	p_inst->tx_state = (uint8_t)TX_STATE_WAIT_MSG;
-
-	for (;;)
-	{
-		uint32_t used;
-
-		if (0u != p_inst->tx_evt_ctrl_valid)
-		{
-			uint8_t code    = p_inst->tx_evt_ctrl_code;
-			uint8_t feature = p_inst->tx_evt_ctrl_feature;
-
-			p_inst->tx_evt_ctrl_valid = 0u;  /* 先读值再清标志 */
-			if (feature == p_inst->tx_cur_feature)
-			{
-				p_inst->tx_state = (uint8_t)TX_STATE_IDLE;
-				return (NORDIC_CTRL_MSG_OK == code) ? 0 : -2;
-			}
-		}
-
-		used = p_inst->p_timebase_interface->pf_get_time() - p_inst->tx_stamp;
-		if (used >= p_inst->cfg.msg_timeout_ms)
-		{
-			p_inst->tx_state = (uint8_t)TX_STATE_IDLE;
-			return -2;
-		}
-		(void)p_inst->p_semaphore_interface->pf_tx_acquire(
-			p_inst->cfg.msg_timeout_ms - used);
-	}
-}
-
-/**
  * @brief  把一条消息的分片逐帧发完: 首包 → 数据片 → 尾包, 每帧停等
  * @param  p_inst   驱动实例
  * @param  p_slot   队首记录
@@ -847,7 +757,7 @@ static int8_t tx_send_all_frames(bsp_nordic_driver_t *p_inst,
 		}
 		else if (frag <= pkg_num)
 		{
-			/* 数据分片: 序号 frag, Data = 第 frag 片(每片至多 31B) */
+			/* 数据分片: 序号 frag, Data = 第 frag 片(每片至多 127B) */
 			offset = (uint16_t)((uint16_t)(frag - 1u) * (uint16_t)NORDIC_FRAG_DATA_SIZE);
 			rest   = (uint16_t)(p_slot->len - offset);
 			if (rest > (uint16_t)NORDIC_FRAG_DATA_SIZE)
@@ -865,7 +775,7 @@ static int8_t tx_send_all_frames(bsp_nordic_driver_t *p_inst,
 		else
 		{
 			/* 尾包: 序号 包数目+1, Data = 整条消息的 CRC16(低字节先发).
-			 * ★frag 不会越过 0xFF★: 单条消息上限 4096B, 分片数至多 133. */
+			 * ★frag 不会越过 0xFF★: 单条消息上限 4096B, 分片数至多 33. */
 			crc        = tx_msg_crc(p_inst, p_slot);
 			payload[0] = (uint8_t)frag;
 			payload[1] = (uint8_t)(crc & 0xFFu);
@@ -880,7 +790,7 @@ static int8_t tx_send_all_frames(bsp_nordic_driver_t *p_inst,
 /**
  * @brief  队首记录收尾: 锁内归还槽位与环空间, 锁外调完成回调
  * @param  p_inst 驱动实例
- * @param  result 结果码(0 成功 / -5 帧级失败 / -6 消息级失败), 原样传给回调
+ * @param  result 结果码(0 成功 / -5 帧级失败), 原样传给回调
  * @note   ★归还必须在回调之前★: 回调里很可能立刻发下一条, 不先归还就会撞满.
  * @note   ★回调必须在锁外★: 回调里几乎一定再调 pf_send, 持着环互斥量调 = 自锁死.
  */
@@ -923,59 +833,28 @@ static void tx_do_single(bsp_nordic_driver_t *p_inst,
 }
 
 /**
- * @brief  消息记录: 分片发完再等消息级确认, 确认不到就从头整体重发
- * @note   两级失败是分开的(见头文件的 @return):
- *           -5 某帧的帧级重传耗尽 —— 连一帧都送不到, 链路大概断了, **不**整体重发;
- *           -6 0x10 或消息级超时, 且整体重发已达 msg_max_retry.
+ * @brief  消息记录: 首包/数据分片/尾包逐帧发完, 尾包的帧级 ACK 到手即收工
+ * @note   ★不再有消息级确认★(0x10/0x11 已删), 所以这里只剩一种失败:
+ *           -5 某帧的帧级重传耗尽 —— 连一帧都送不到, 链路大概断了.
  */
 static void tx_do_message(bsp_nordic_driver_t *p_inst,
 						  const nordic_tx_slot_t *p_slot)
 {
 	uint16_t pkg_num;
-	int8_t   result;
 
 	pkg_num = (uint16_t)(((uint32_t)p_slot->len + (uint32_t)NORDIC_FRAG_DATA_SIZE - 1u) /
 						 (uint32_t)NORDIC_FRAG_DATA_SIZE);
-	p_inst->tx_msg_retry = 0u;
 
-	for (;;)
-	{
-		if (0 != tx_send_all_frames(p_inst, p_slot, pkg_num))
-		{
-			result = -5;
-			break;
-		}
-
-		if (0 == tx_wait_msg_ack(p_inst))
-		{
-			result = 0;
-			break;
-		}
-
-		/* 对端报 0x10(整条 CRC 错)或消息级超时: 立刻从头整体重发 */
-		if (p_inst->tx_msg_retry >= p_inst->cfg.msg_max_retry)
-		{
-			result = -6;
-			break;
-		}
-		p_inst->tx_msg_retry++;
-	}
-
-	tx_finish_record(p_inst, result);
+	tx_finish_record(p_inst,
+					 (0 == tx_send_all_frames(p_inst, p_slot, pkg_num)) ? 0 : -5);
 }
 
 /**
  * @brief  把队首那条记录发完(可能很久), 然后出队并回调
- * @note   ★清 ctrl 标志的位置★: 只能在这里 —— 此刻新记录还一个字都没发, 所以清掉的
- *         必然只可能是**上一条**残留的 0x10/0x11. 放到等确认的地方清就会把本条的
- *         0x11 一起清掉(见 tx_wait_msg_ack 的 @note).
  */
 static void tx_process_record(bsp_nordic_driver_t *p_inst)
 {
 	const nordic_tx_slot_t *p_slot = &p_inst->tx_slot[p_inst->tx_slot_head];
-
-	p_inst->tx_cur_feature   = p_slot->feature;
-	p_inst->tx_evt_ctrl_valid = 0u;
 
 	if (p_slot->feature <= (uint8_t)NORDIC_FEATURE_SINGLE_MAX)
 	{
@@ -1044,11 +923,11 @@ static void nordic_rx_task(struct bsp_nordic_driver *p_nordic_instance)
  * @note   ★本层是 BSP, **不创建**这个任务: 它是上层用 osThreadNew 挂载的阻塞式
  *         入口, 优先级须**低于** RX. 挂载时由 adapter 的入口包装在返回后补
  *         osThreadExit()(CMSIS-RTOS v2 下从线程函数 return 是未定义行为).
- * @note   ★tx 信号量是"有事发生"的信号, 不是"有记录"的账本★: 入环、ACK、0x10/0x11
+ * @note   ★tx 信号量是"有事发生"的信号, 不是"有记录"的账本★: 入环、帧级 ACK
  *         都会 release 一次, 所以它天然会虚唤醒、计数也会虚高. 主循环只看 tx_slot_cnt
  *         来决定发不发, 虚唤醒最多多转一圈, 不会误发也不会漏发.
- * @note   停等期间的等待与超时都在 tx_send_frame / tx_wait_msg_ack 里, 所以 deinst
- *         之后本任务是"最迟一个帧超时/消息超时之后"才看到 inited == 0 并退出.
+ * @note   停等期间的等待与超时都在 tx_send_frame 里, 所以 deinst 之后本任务是
+ *         "最迟一个帧超时之后"才看到 inited == 0 并退出.
  */
 static void nordic_tx_task(struct bsp_nordic_driver *p_nordic_instance)
 {
@@ -1152,18 +1031,13 @@ static void proto_reset_state(bsp_nordic_driver_t *p_inst)
 	p_inst->tx_slot_cnt  = 0u;
 
 	p_inst->tx_state            = (uint8_t)TX_STATE_IDLE;
-	p_inst->tx_cur_feature      = 0u;
 	p_inst->tx_cur_seq          = 0u;
 	p_inst->tx_retry            = 0u;
-	p_inst->tx_msg_retry        = 0u;
 	p_inst->tx_cur_frame        = 0u;
 	p_inst->tx_stamp            = 0u;
 
 	p_inst->tx_evt_ack_seq      = 0u;
 	p_inst->tx_evt_ack_valid    = 0u;
-	p_inst->tx_evt_ctrl_code    = 0u;
-	p_inst->tx_evt_ctrl_feature = 0u;
-	p_inst->tx_evt_ctrl_valid   = 0u;
 
 	(void)memset(p_inst->rx_cb_tab, 0, sizeof(p_inst->rx_cb_tab));
 }

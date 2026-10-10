@@ -540,9 +540,9 @@ static int8_t uart_wait_rxcplt(uart_driver_t *p_uart_instance, uint32_t timeout_
  * @return  0 成功 / -1 实例空 / -2 初始化失败
  * @note    UART 的时钟与引脚都在本函数里配, 不走 ST 的 MSP 回调
  *          (HAL_UART_MspInit 未实现, HAL 自带的那个空弱函数不会动 GPIO).
- * @note    ★与 Core/system/uart/uart.c 的 UART_Init() 是重复配置★: 那一处用全局
- *          huart1 服务 printf, 必须留着。两处配的是同一组引脚、同样的参数, 且
- *          RCC 使能是置位幂等, 重复执行没有副作用。
+ * @note    ★日志口不在这里★: printf 的 USART6(PA11/PA12) 由
+ *          Core/system/uart/uart.c 的 UART_Init() 单独配, 与本函数的 USART1
+ *          (PA9/PA10) 是两个互不重叠的外设。
  * @note    TX/RX DMA 流与它们的 NVIC 由 adapter 的 nordic_bsp_dma_init() 配,
  *          必须在本函数之前跑完(DMA 句柄由 cfg 注入)。
  * @note    引用计数: ref_count 由 0→1 时才真正初始化外设(重复init不会重配一遍)

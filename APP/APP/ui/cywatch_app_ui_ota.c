@@ -5,13 +5,14 @@
  *
  * @file cywatch_app_ui_ota.c
  *
- * @brief OTA 页(ota, ID 0x0304)的 APP 层: 收切页通知与按键事件, 其余服务事件暂未订阅.
+ * @brief OTA 页(ota, ID 0x0304)的 APP 层: 收切页通知、按键、圆按钮三类事件.
  *
  * Processing flow:
  *
  * LVGL 手势 ──EVT_SERVICE_UIHOME_SWITCH_PAGE(flags = 方向旗标)──> 本页 handler
  *   ──> app_ui_ota_switch_page(): 使能目标页 + 提到最前 → 失能自己
  * 按键服务 ──EVT_SERVICE_KEY_PRESS(flags = 键值, data = 手势)──> app_ui_ota_key()
+ * LVGL 圆按钮 ──EVT_SERVICE_OTA_BUTTON──> service_ota_start() 起下载任务
  *
  * @version V1.0
  *
@@ -23,13 +24,15 @@
  * @note ★本页不是开机页★: 注册成 PAGE_FLAG_DISABLE, 等 LVGL 从表盘页/血氧页切过来时
  *       由那一页的 switch_page 使能.
  *
- * @note ★OTA 整套还没做★: nordic 服务当前只剩 init/register/send 三个口(见
- *       cywatch_service_nordic.h), 升级流程要从零设计. 事件表里已经预留了
- *       EVT_SERVICE_OTA_BUTTON, 但本页还**没有订阅它** —— 等 OTA 真做起来再补.
+ * @note ★本页只转发, 不做任何判断★: 圆按钮接到 service_ota_start() 上就结束了 ——
+ *       "这一下是检查、是下载、还是重来"全由服务按相位分路. ★别在下面的按钮分支里
+ *       再投任何显示值★: OTA 页的写者已经归 OTA 任务, 加第二个写者会静默丢更新.
+ *       服务已经是**真实路径**(发 0x01/0x03/0x05, 收 0x02/0x04/整块, 写 ota/).
  *****************************************************************************/
 #include "easyapp_port.h"
 #include "easyapp_event.h"
 #include "cywatch_service_key.h"
+#include "cywatch_service_ota.h"
 #include "system/log/cywatch_log.h"
 
 static int8_t app_ui_ota_handler(void *event);
@@ -60,16 +63,17 @@ typedef enum
 easyapp_page_register(ui_ota, app_ui_ota_handler, PAGE_FLAG_DISABLE,
     EVT_SERVICE_UIHOME_SWITCH_PAGE,
     EVT_SERVICE_KEY_PRESS,
+    EVT_SERVICE_OTA_BUTTON,
 );
 
 /******************************************************************************
  * @name    app_ui_ota_handler
- * @brief   本页事件处理机: 切页跟随 + 按键, 其余待填
+ * @brief   本页事件处理机: 切页跟随 + 按键 + 圆按钮
  * @param   event[in] EasyAPP 事件
  *
  * @return  1 = 消费
  *
- * @note    只订阅了切页与按键两条, 别的事件收不到
+ * @note    只订阅了切页/按键/圆按钮三条, 别的事件收不到
  *****************************************************************************/
 static int8_t app_ui_ota_handler(void *event)
 {
@@ -87,6 +91,15 @@ static int8_t app_ui_ota_handler(void *event)
         case EVT_SERVICE_KEY_PRESS:
         {
             return app_ui_ota_key(p_event);
+            break;
+        }
+
+        case EVT_SERVICE_OTA_BUTTON:
+        {
+            /* 页面已经把"在跑就取消、没跑就开始"这类判别留给服务侧, 这里无脑起 ——
+               服务的 start() 自己按任务存活分路 */
+            service_ota_start();
+            return 1;
             break;
         }
 

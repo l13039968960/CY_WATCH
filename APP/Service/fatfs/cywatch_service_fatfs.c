@@ -809,6 +809,28 @@ int8_t service_fatfs_remove(const char *p_path)
     return (int8_t)f_unlink(p_path);
 }
 
+int8_t service_fatfs_mkdir(const char *p_path)
+{
+    FRESULT fr;
+    int8_t  ret;
+
+    if (NULL == p_path)
+    {
+        return SERVICE_FATFS_ERR_NULL_ARG;
+    }
+
+    ret = service_fatfs_state_check();
+    if (SERVICE_FATFS_OK != ret)
+    {
+        return ret;
+    }
+
+    fr = f_mkdir(p_path);
+
+    /* ★目录已存在当成功★: 第二轮下载/续传必然撞上, 原样报错会让调用方误判 */
+    return (FR_EXIST == fr) ? SERVICE_FATFS_OK : (int8_t)fr;
+}
+
 int8_t service_fatfs_list(const char *p_path, fatfs_dirent_cb_t pf_cb, void *p_arg)
 {
     DIR      dir;

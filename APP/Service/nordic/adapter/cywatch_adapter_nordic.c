@@ -65,16 +65,15 @@
  *       TX 环. 排障时往 USART1 找, 不要在 DMA2_Stream7 上找.
  *
  * @note 为什么 USART1 只能有这一个数据通路属主: 驱动实例内嵌**自己的**
- *       UART_HandleTypeDef(uart_hal.h:76), 与 usart.c 的全局 huart1 指向同一外设.
- *       huart1 的 gState 恒为 READY, 任何一处 HAL_UART_Transmit(&huart1, ...)
- *       都会绕过驱动直接写 DR —— 在 DMA 发送在途时就是抢寄存器、往协议线上注入
- *       ★本工程的现状是"还没让"★: 参考工程把 printf 挪去了 USART2, 但本板 PA2 被
- *       ADKEY(ADC1_IN2)占着, USART6 的 PC6/PC7 在 UFQFPN48 上没引出 —— 没有第二个
- *       可用串口。printf 与本节流量的冲突**仍在**, 详见 Core/main.c 里那段的 @warning.
+ *       UART_HandleTypeDef(uart_hal.h:76). 任何别处拿一个指向 USART1 的句柄做
+ *       HAL_UART_Transmit 都会绕过驱动直接写 DR —— 在 DMA 发送在途时就是抢寄存器、
+ *       往协议线上注入。
+ *       ★printf 已不在这里★: 日志口是 USART6(PA11/PA12), 见 Core/system/uart/uart.c
+ *       —— 与 USART1 是两个独立外设, 互不抢寄存器。
  *
  * @note 驱动回调 HAL_UARTEx_RxEventCallback 靠 "huart 是驱动实例首成员" 做
  *       container_of 强转(uart_hal.c:358). 因此**任何其它 UART 句柄都不得进入
- *       ReceiveToIdle 模式**(printf 的 huart2 是阻塞 TX, 不涉及).
+ *       ReceiveToIdle 模式**(printf 的 huart6 是阻塞 TX, 不涉及).
  ******************************************************************************/
 #include "cywatch_adapter_nordic.h"
 #include "uart_hal.h"
@@ -565,7 +564,7 @@ int8_t nordic_bsp_inst(nordic_cfg_t *p_cfg)
 		return -4; /* 优先级不满足 FreeRTOS 约束(见文件头 @note) */
 	}
 
-	/* 驱动配置: USART1 115200 8N1(与 usart.c 的 MX_USART1_UART_Init 参数一致) */
+	/* 驱动配置: USART1 115200 8N1 */
 	g_uart1_cfg.p_uart_base       = USART1;
 	g_uart1_cfg.init.BaudRate     = 115200;
 	g_uart1_cfg.init.WordLength   = UART_WORDLENGTH_8B;
@@ -578,7 +577,7 @@ int8_t nordic_bsp_inst(nordic_cfg_t *p_cfg)
 	g_uart1_cfg.p_hdma_rx         = &g_uart1_hdma_rx;
 
 	/* 引脚由本层给: uart_hal 不走 MSP, USART1 时钟与 PA9/PA10 在 pf_init 里配.
-	   与 usart.c 的 UART_Init() 是同一组引脚, 重复配置无副作用 */
+	   日志口已改到 USART6(PA11/PA12), 与这里不再重叠 */
 	g_uart1_cfg.gpio.p_port = GPIOA;
 	g_uart1_cfg.gpio.pins   = GPIO_PIN_9 | GPIO_PIN_10;
 	g_uart1_cfg.gpio.mode   = GPIO_MODE_AF_PP;

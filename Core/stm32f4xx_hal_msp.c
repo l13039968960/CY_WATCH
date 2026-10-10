@@ -86,7 +86,7 @@ void HAL_MspInit(void)
      Core/PWM/pwm_hal.c  的 pwm_init / pwm_deinit
      Core/UART/uart_hal.c 的 uart_init / uart_deinit
    做法都是按基地址分派开时钟 + HAL_GPIO_Init, HAL 自带的空弱函数留在原位。
-   UART 是唯一的例外: Core/system/uart/uart.c 的 UART_Init() 也在配同一组引脚
-   (printf 要用那个全局 huart1), 两处参数一致、RCC 使能置位幂等, 重复无害。 */
+   UART 另有一处: Core/system/uart/uart.c 的 UART_Init() 单配日志口 USART6
+   (PA11=TX/PA12=RX, printf 用), 与 uart_hal 管的 USART1 是两个外设, 不是重复。 */
 
 /* USER CODE END 1 */

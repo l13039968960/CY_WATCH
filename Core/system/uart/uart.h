@@ -10,11 +10,11 @@
  *
  * @author zw1194
  *
- * @brief Declare the USART1 init and printf retarget interfaces.
+ * @brief Declare the 日志口(USART6) init and printf retarget interfaces.
  *
  * Processing flow:
  *
- * call MX_USART1_UART_Init() in main(), then use printf() freely.
+ * call UART_Init() in main(), then use printf() freely.
  *
  * @version V1.0
  *
@@ -31,7 +31,7 @@
 /***********************************Includes***********************************/
 
 /**********************************Declaring***********************************/
-/* USART1 初始化(PA9=TX, PA10=RX, 115200 8N1), 需在首次 printf 前调用 */
+/* 日志口 USART6 初始化(PA11=TX, PA12=RX, 115200 8N1), 需在首次 printf 前调用 */
 void UART_Init(void);
 
 /**********************************Declaring***********************************/

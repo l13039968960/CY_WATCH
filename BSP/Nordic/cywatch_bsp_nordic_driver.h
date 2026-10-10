@@ -29,8 +29,8 @@
  * 全部状态都在实例结构体里, 本层 .c 不留 static 全局.
  *
  * 【两条铁律】违反必出帧错乱:
- *   一, 发送状态只由 TX 任务改写. RX 侧探到 ACK / 0x10 / 0x11 时只写"事件标志 + 值"
- *       再 Release 信号量, 由 TX 任务醒来消费.
+ *   一, 发送状态只由 TX 任务改写. RX 侧探到 ACK 时只写"事件标志 + 值"再 Release
+ *       信号量, 由 TX 任务醒来消费.
  *   二, 整帧输出口有两个写者(RX 任务直发 ACK / TX 任务发数据与控制帧), 每次
  *       "把一整帧交给总线"都必须持 p_mtx_bus, 否则两帧字节会交错成缝合怪帧.
  *
@@ -56,27 +56,24 @@
 
 /***********************************Defines************************************/
 /* ---------- 线上帧: AA 55 | Feature id | Seq/ACK | Length | payload | CRC16 ---------- */
-#define NORDIC_MAX_FRAME		39   /* 帧头2 + Feature1 + Seq1 + Len1 + payload32 + CRC2 */
-#define NORDIC_MAX_PAYLOAD		32   /* 单帧 payload 上限 */
+#define NORDIC_MAX_FRAME		135  /* 帧头2 + Feature1 + Seq1 + Len1 + payload128 + CRC2 */
+#define NORDIC_MAX_PAYLOAD		128  /* 单帧 payload 上限 */
 
 /* ---------- Feature id: 取值区间本身就表示类型 ---------- */
 #define NORDIC_FEATURE_ACK			0x00U /* ACK,  payload = 0 */
-#define NORDIC_FEATURE_CTRL			0x01U /* 控制帧, payload = 控制码1 + 控制Data */
-#define NORDIC_FEATURE_SINGLE_MIN	0x02U /* 单帧数据包区间起 */
+#define NORDIC_FEATURE_CTRL			0x01U /* 链路层控制, payload = 控制码1 + Data(0-127).
+										   * ★只在本跳(STM32↔nRF)生效, 当前无定义控制码★ */
+#define NORDIC_FEATURE_SINGLE_MIN	0x02U /* 单帧数据包区间起(0x02 已被 OTA 应用层占用) */
 #define NORDIC_FEATURE_SINGLE_MAX	0x80U /* 单帧数据包区间止 */
 #define NORDIC_FEATURE_MSG_MIN		0x81U /* 消息数据包区间起 */
 #define NORDIC_FEATURE_MSG_MAX		0xFFU /* 消息数据包区间止 */
 
-#define NORDIC_SINGLE_DATA_SIZE	32   /* 单帧数据包的数据上限(payload 全是数据) */
-#define NORDIC_FRAG_DATA_SIZE	31   /* 分片数据上限(payload = 分包序号1 + Data) */
-
-/* ---------- 控制码(协议层自用, 用 switch 分发, 不上报应用) ---------- */
-#define NORDIC_CTRL_MSG_CRC_ERR	0x10U /* 对端报: 分包传输 CRC 校验错误, Data = 出错的特征 */
-#define NORDIC_CTRL_MSG_OK		0x11U /* 对端报: 分包传输重组成功,   Data = 成功的特征 */
+#define NORDIC_SINGLE_DATA_SIZE	128  /* 单帧数据包的数据上限(payload 全是数据) */
+#define NORDIC_FRAG_DATA_SIZE	127  /* 分片数据上限(payload = 分包序号1 + Data) */
 
 /* ---------- 缓冲 ---------- */
 #define NORDIC_TX_RING_SIZE		5120U /* 发送环: 5KB **总容量**(只放记录的数据字节) */
-#define NORDIC_TX_MSG_MAX		4096U /* 单条消息上限 4KB, 整条确认后才归还环空间 */
+#define NORDIC_TX_MSG_MAX		4096U /* 单条消息上限 4KB(= 重组缓冲尺寸), 尾包 ACK 到手才归还环空间 */
 #define NORDIC_RX_MSG_BUF_SIZE	4096U /* 接收重组缓冲 4KB, 单缓冲 */
 #define NORDIC_FEATURE_TAB_SIZE	256U  /* 特征回调表: 下标即 Feature id */
 #define NORDIC_TX_SLOT_NUM		16U   /* 发送环最多同时排几条记录(记录头在槽数组里) */
@@ -97,9 +94,10 @@
 typedef void (*nordic_rx_cb_t)(uint8_t feature, uint8_t *pdata, uint16_t len);
 
 /* 发送完成通知(随记录入环, 不需要额外编号标识是哪条), 运行在 TX 任务上下文:
- *   result =  0 发送成功(单帧=帧ACK到手; 消息=收到消息级确认 0x11)
+ *   result =  0 发送成功(单帧=帧ACK到手; 消息=尾包的帧ACK到手)
  *          = -5 帧级失败(某帧 ACK 重传耗尽)
- *          = -6 消息级失败(0x11 未到或对端持续报 0x10, 整体重发耗尽)
+ * ★消息层没有跨端握手(0x10/0x11 已删), 所以"尾包 ACK 到手"就是发送侧能知道的全部;
+ *   内容对不对由应用层的整包校验兜底.
  * ★回调触发前环空间已归还, 在回调里立刻发下一条不会撞满. */
 typedef void (*nordic_tx_done_cb_t)(int8_t result);
 
@@ -152,10 +150,7 @@ typedef struct
 typedef struct
 {
 	uint32_t frame_timeout_ms; /* 帧级 ACK 超时(协议建议 100) */
-	uint32_t msg_timeout_ms;   /* 消息级确认超时(协议建议 >= 2000, 须覆盖对端
-								* 0x10/0x11 自身 5 次重传的 500ms) */
 	uint8_t frame_max_retry;   /* 帧级重传上限(协议建议 5) */
-	uint8_t msg_max_retry;     /* 消息级整体重发上限(协议建议 3) */
 } nordic_cfg_t;
 
 /* ---------- 发送环里的一条记录: 记录头在槽数组, 数据字节在环里 ---------- */
@@ -209,24 +204,17 @@ typedef struct bsp_nordic_driver
 	uint8_t  tx_slot_cnt;             /* 在环里还没走完的记录条数 */
 
 	/* ---- 发送: 停等状态(只由 TX 任务改写) ---- */
-	uint8_t  tx_state;                /* 空闲 / 等帧ACK / 等消息确认 */
-	uint8_t  tx_cur_feature;
+	uint8_t  tx_state;                /* 空闲 / 等帧ACK */
 	uint8_t  tx_cur_seq;              /* 本端发送序号, 与接收侧判重的 seq 互不相干 */
 	uint8_t  tx_retry;                /* 当前帧已重传次数 */
-	uint8_t  tx_msg_retry;            /* 整条消息已重发次数 */
 	uint16_t tx_cur_frame;            /* 当前记录已发到第几包 */
-	uint32_t tx_stamp;                /* 当前这一等的起始时刻(帧超时/消息超时共用) */
+	uint32_t tx_stamp;                /* 当前这一等的起始时刻 */
 
 	/* ---- 发送: RX 侧交给 TX 的事件(RX 写, TX 读; §铁律一 只写值不碰发送状态) ---- */
-	/* ★两个事件各占一个标志, 不共用槽★: 尾包发出后, 对端的 0x11 往往在本端 TX 还没
-	 * 被调度起来时就已被 RX 收下(ACK 与 0x11 只隔 1 帧的时间), 共用一个槽会被后来的
-	 * 帧 ACK 顶掉 —— 表现为"明明成功了却白等一个消息超时再重发一遍".
-	 * RX 侧**先写值、后写标志**; TX 侧读到标志后**先读值、再清标志**. */
+	/* ★只剩帧级 ACK 这一个事件★: 消息层的 0x11 已删, 不必再给"两个事件各占一个标志"
+	 * 那套防顶掉. RX 侧**先写值、后写标志**; TX 侧读到标志后**先读值、再清标志**. */
 	uint8_t tx_evt_ack_seq;           /* 帧级 ACK 携带的确认号 */
 	uint8_t tx_evt_ack_valid;         /* 1 = 上面有效(TX 消费后清 0) */
-	uint8_t tx_evt_ctrl_code;         /* 控制帧的控制码(0x10/0x11) */
-	uint8_t tx_evt_ctrl_feature;      /* 控制帧报的特征, 对不上不采信 */
-	uint8_t tx_evt_ctrl_valid;        /* 1 = 上面两有效(TX 消费后清 0) */
 
 	/* ---- 函数指针 ---- */
 	int8_t (*pf_inst)(
@@ -253,7 +241,7 @@ typedef struct bsp_nordic_driver
 	/* 写一条数据进发送环. 特征号落在哪个区间决定走单帧还是消息封装, 调用方不用管
 	 * (应用可用 0x02-0xFF; 0x00/0x01 是协议自用).
 	 * ★★特征号 ≤ NORDIC_FEATURE_SINGLE_MAX(0x80) 时, len 必须 ≤
-	 *   NORDIC_SINGLE_DATA_SIZE(32)★★ —— 单帧的 payload 就是数据本身, 超了会溢出发送
+	 *   NORDIC_SINGLE_DATA_SIZE(128)★★ —— 单帧的 payload 就是数据本身, 超了会溢出发送
 	 *   侧的栈缓冲. 本层**不做这个校验**(用户决定), 违背 = 未定义行为. 要发长数据就
 	 *   换一个落在 0x81-0xFF 的特征号.
 	 * ★非阻塞: 放不下整条立即返回错误, 绝不挂起调用方. 入环即拷贝, 返回后 pdata

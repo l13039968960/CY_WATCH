@@ -207,6 +207,17 @@ int8_t service_fatfs_size(fatfs_file_t *p_file, uint32_t *p_size);
 int8_t service_fatfs_remove(const char *p_path);
 
 /**
+ * @name  service_fatfs_mkdir
+ * @brief 建目录. 内部就是 f_mkdir
+ * @param p_path[in] 目录路径(UTF-8), 如 "ota"
+ * @return 0 成功(**含目录已存在**) / <0 见 SERVICE_FATFS_ERR_* / >0 见 FR_*
+ * @note ★FR_EXIST(8) 当成功★: 目录已存在是正常情形(第二轮下载/续传), 原样报错会让
+ *       调用方把"目录本来就在"误判成"建不出来". f_mkdir 对已存在的目录返回 FR_EXIST.
+ * @note 不建中间层: "a/b" 要求 "a" 已存在, 否则 FR_NO_PATH(5).
+ */
+int8_t service_fatfs_mkdir(const char *p_path);
+
+/**
  * @name  service_fatfs_list
  * @brief 列目录: 每找到一个条目就调一次 pf_cb
  * @param p_path[in] 目录路径(根目录写 "")

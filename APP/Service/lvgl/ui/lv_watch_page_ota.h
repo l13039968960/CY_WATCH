@@ -10,13 +10,13 @@
  *
  * @author	zw1194
  *
- * @brief OTA 升级页(lv_watch_page_ota.c)的**异步设置口**: 让别的任务(app_core)
+ * @brief OTA 升级页(lv_watch_page_ota.c)的**异步设置口**: 让 OTA 任务
  *        能把"进度条值 / 按钮文案 / 按钮可点性 / 进度条显隐 / 按钮色系"投进来,
  *        而真正的 lv_xxx() 调用留在本页自己的 100ms 定时器里做.
  *
  * Processing flow:
  *
- * 调用方(单写者, 通常是 app_core 任务)          lvgl 任务
+ * 调用方(单写者 = OTA 任务)                    lvgl 任务
  *   watch_page_ota_post_progress(45)  ┐
  *   watch_page_ota_post_text("...")   ├─> 写静态槽 ─> 本页 100ms lv_timer 取用
  *   watch_page_ota_post_state(&cmd)   ┘              └─> lv_bar_set_value / lv_label_set_text
@@ -39,6 +39,8 @@
  *
  * @note ★只允许一个任务调用★ 内部是"双缓冲 + 单索引", 单写者是它成立的前提;
  *       多一个写者会静默失效(不会崩, 只会画出混合了两次投值的中间态).
+ *       ★这个写者原是 app_core 任务, 现在归 OTA 任务(service_ota_*)★ —— app_core
+ *       的按钮分支只调 service_ota_start(), 不许再往本页投任何值.
  *
  * @note ★★中文文案必须在 LVGL/assets/fonts 的 CJK_SYMBOLS 子集里★★ 文案现在从
  *       app_core 侧传进来, 而缺字**不报错、不告警、不链接失败**, 只是那个字**渲染成
@@ -115,9 +117,9 @@ int8_t watch_page_ota_post_text(const char *p_text);
  *
  * @return  无
  *
- * @note    ★置灰就再点不动了★ 只有 app_core 能把它放回来, 所以 app_core 必须在
- *          "检查/下载"这类进行态上自己带超时兜底, 否则用户会被永久卡在一个死按钮上
- *          (页面只剩手势可走)
+ * @note    ★置灰就再点不动了★ 只有 OTA 任务能把它放回来, 所以它必须在
+ *          "检查/下载"这类进行态上自己带超时兜底, 并且**每个终态都要投回 enabled = 1**
+ *          (任务要自退, 退了就没人再能按回可点), 否则用户会被永久卡在一个死按钮上
  *****************************************************************************/
 void watch_page_ota_post_enabled(uint8_t enabled);
 

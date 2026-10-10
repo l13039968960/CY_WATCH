@@ -60,3 +60,5 @@ Driver/CMSIS/Lib/
 # Python 运行残留 (Script/ 下的脚本)
 __pycache__/
 *.pyc
+
+BSP/Nordic/sdk/nRF5_SDK_17.1.0_ddde560

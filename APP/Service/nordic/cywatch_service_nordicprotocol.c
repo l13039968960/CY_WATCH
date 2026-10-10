@@ -37,9 +37,11 @@
 #include "cmsis_os2.h"
 
 /***********************************Defines************************************/
-/* RX 任务栈: 最坏路径 = 重扫嵌套(深度上限 8)里的解析 + 重组 + 回调, 约 1.5KB, 且
-   Cortex-M 的**中断借用任务栈**(RX DMA 5 / USART1 7 可能再叠约 200B). 2048 太贴边,
-   给 3072 —— configCHECK_FOR_STACK_OVERFLOW 是 0, 栈溢出在本工程是**静默踩堆**. */
+/* RX 任务栈: 最坏路径 = 重扫嵌套(深度上限 8, 每层一个 135B 的 rescan 数组 → 约
+   1.1KB)里的解析 + 重组 + 回调, 合计约 1.8KB, 且 Cortex-M 的**中断借用任务栈**
+   (RX DMA 5 / USART1 7 可能再叠约 200B). 给 3072, 余量约 1.2KB ——
+   configCHECK_FOR_STACK_OVERFLOW 是 0, 栈溢出在本工程是**静默踩堆**;
+   帧长上限(NORDIC_MAX_FRAME)再涨就回来重算这个数. */
 #define SVC_NORDIC_RX_STACK           3072u
 #define SVC_NORDIC_TX_STACK           2048u
 /***********************************Defines************************************/
@@ -62,9 +64,7 @@ int8_t service_nordicprotocol_init(void)
 	/* ---- 1. 协议参数: 取协议建议值(doc/协议.txt); 协议核构造时会**拷一份**进实例,
 	       所以本缓冲放栈上即可(见 BSP 头的 nordic_cfg_t 注释) ---- */
 	cfg.frame_timeout_ms = 100u;  /* 帧级 ACK 超时 */
-	cfg.msg_timeout_ms   = 2000u; /* 消息级确认超时(须覆盖对端 0x10/0x11 的重传) */
 	cfg.frame_max_retry  = 5u;    /* 帧级重传上限 */
-	cfg.msg_max_retry    = 3u;    /* 消息级整体重传上限 */
 
 	/* ---- 2. adapter 一条龙: 4 个 RTOS 对象 → 板级绑定 → 协议核构造 ---- */
 	ret = nordic_bsp_inst(&cfg);
